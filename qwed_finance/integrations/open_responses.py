@@ -378,22 +378,86 @@ class OpenResponsesIntegration:
             receipt=receipt
         )
     
-    def format_for_responses_api(self, result: VerifiedToolCall) -> Dict[str, Any]:
-        """Format result for OpenAI Responses API"""
+    def format_for_responses_api(
+        self, 
+        result: VerifiedToolCall,
+        tool_call_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Format result as Open Responses Item for streaming compatibility.
+        
+        Returns a ToolResultItem that agents can stream properly.
+        """
+        import uuid
+        
+        call_id = tool_call_id or f"call_{uuid.uuid4().hex[:12]}"
+        
         if result.status == ToolCallStatus.APPROVED:
             return {
                 "type": "tool_result",
+                "id": call_id,
                 "tool_use_id": result.tool_name,
-                "content": json.dumps(result.result),
+                "content": {
+                    "mime_type": "application/json",
+                    "text": json.dumps({
+                        "result": result.result,
+                        "verification": {
+                            "verified": True,
+                            "engine": result.receipt.engine_used.value if result.receipt else "unknown",
+                            "receipt_id": result.receipt.receipt_id if result.receipt else None,
+                            "input_hash": result.receipt.input_hash if result.receipt else None,
+                            "timestamp": result.receipt.timestamp if result.receipt else None
+                        }
+                    })
+                },
                 "is_error": False
             }
         else:
             return {
                 "type": "tool_result",
+                "id": call_id,
                 "tool_use_id": result.tool_name,
-                "content": json.dumps({
-                    "error": result.error,
-                    "retry_message": result.retry_message
-                }),
+                "content": {
+                    "mime_type": "application/json",
+                    "text": json.dumps({
+                        "error": result.error,
+                        "retry_message": result.retry_message,
+                        "violations": result.receipt.violations if result.receipt else []
+                    })
+                },
                 "is_error": True
             }
+    
+    def format_as_item(
+        self,
+        result: VerifiedToolCall,
+        tool_call_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Format as a semantic Item for Open Responses streaming.
+        
+        This is the atomic unit of context in the agentic loop.
+        """
+        return self.format_for_responses_api(result, tool_call_id)
+    
+    def get_verification_item(self, receipt: VerificationReceipt) -> Dict[str, Any]:
+        """
+        Create a standalone verification Item from a receipt.
+        
+        Useful for audit logging in the conversation context.
+        """
+        return {
+            "type": "verification_receipt",
+            "id": receipt.receipt_id,
+            "content": {
+                "mime_type": "application/json",
+                "text": receipt.to_json()
+            },
+            "metadata": {
+                "guard": receipt.guard_name,
+                "engine": receipt.engine_used.value,
+                "verified": receipt.verified,
+                "timestamp": receipt.timestamp
+            }
+        }
+

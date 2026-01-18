@@ -298,3 +298,111 @@ class UCPIntegration:
     def get_audit_summary(self) -> Dict[str, Any]:
         """Get summary of all payment verifications"""
         return self.audit_log.summary()
+    
+    @staticmethod
+    def get_capability_definition() -> Dict[str, Any]:
+        """
+        Get UCP Capability Definition for dynamic discovery.
+        
+        This allows platforms to discover and register this verification
+        service in their .well-known/ucp.json configuration.
+        
+        Returns:
+            Capability definition for UCP registry
+        """
+        return {
+            "id": "qwed-finance-verification",
+            "type": "extension",
+            "version": "1.0.0",
+            "name": "QWED Finance Verification Guard",
+            "description": "Deterministic verification for payment tokens, ISO 20022 messages, and loan calculations using symbolic solvers.",
+            "provider": {
+                "name": "QWED-AI",
+                "url": "https://qwedai.com",
+                "contact": "support@qwedai.com"
+            },
+            "supported_operations": [
+                {
+                    "name": "verify_payment_token",
+                    "description": "Verify payment token with AML/KYC checks",
+                    "input": {
+                        "amount": "number",
+                        "currency": "string",
+                        "customer_country": "string",
+                        "kyc_verified": "boolean"
+                    },
+                    "output": {
+                        "can_proceed": "boolean",
+                        "status": "string",
+                        "violations": "array",
+                        "receipt_ids": "array"
+                    }
+                },
+                {
+                    "name": "verify_iso20022_payment",
+                    "description": "Verify ISO 20022 XML with sanctions screening",
+                    "input": {
+                        "xml_message": "string",
+                        "sanctions_list": "array (optional)"
+                    },
+                    "output": {
+                        "can_proceed": "boolean",
+                        "status": "string",
+                        "violations": "array"
+                    }
+                },
+                {
+                    "name": "verify_loan_terms",
+                    "description": "Verify loan calculation accuracy",
+                    "input": {
+                        "principal": "number",
+                        "annual_rate": "number",
+                        "months": "integer"
+                    },
+                    "output": {
+                        "verified": "boolean",
+                        "computed_payment": "string"
+                    }
+                }
+            ],
+            "verification_engines": [
+                {"name": "Z3", "type": "SMT Solver", "use_case": "Compliance logic"},
+                {"name": "SymPy", "type": "Symbolic Math", "use_case": "Financial calculations"},
+                {"name": "SQLGlot", "type": "SQL AST", "use_case": "Query safety"},
+                {"name": "XML Schema", "type": "Structure", "use_case": "Message validation"}
+            ],
+            "audit_trail": {
+                "enabled": True,
+                "format": "VerificationReceipt",
+                "includes": ["input_hash", "timestamp", "engine_signature", "proof_steps"]
+            },
+            "compliance": [
+                "BSA/FinCEN (AML/CTR)",
+                "KYC Requirements",
+                "OFAC Sanctions",
+                "ISO 20022"
+            ]
+        }
+    
+    def get_ucp_json_entry(self) -> Dict[str, Any]:
+        """
+        Get entry for .well-known/ucp.json registration.
+        
+        Returns:
+            Entry to add to a business's UCP configuration
+        """
+        return {
+            "capabilities": {
+                "qwed-finance": {
+                    "enabled": True,
+                    "endpoint": "/api/qwed/verify",
+                    "version": "1.0.0",
+                    "operations": [
+                        "verify_payment_token",
+                        "verify_iso20022_payment",
+                        "verify_loan_terms"
+                    ]
+                }
+            }
+        }
+
