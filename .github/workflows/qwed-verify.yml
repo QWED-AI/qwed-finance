@@ -1,0 +1,13 @@
+name: QWED Finance Verification
+
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: QWED-AI/qwed-finance@v1.1.1
+        with:
+          test-script: tests/verify_agent.py
