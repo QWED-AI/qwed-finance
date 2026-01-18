@@ -25,6 +25,78 @@ QWED-Finance is a **middleware layer** that applies QWED's deterministic verific
 
 ---
 
+## 🛡️ The Three Guards
+
+### 1. Compliance Guard (Z3-Powered)
+**KYC/AML regulatory verification with formal boolean logic proofs.**
+
+```python
+from qwed_finance import ComplianceGuard
+
+guard = ComplianceGuard()
+
+# Verify AML flagging decision
+result = guard.verify_aml_flag(
+    amount=15000,        # Over $10k threshold
+    country_code="US",
+    llm_flagged=True     # LLM flagged it
+)
+# result.compliant = True ✅
+```
+
+**Supports:**
+- AML/CTR threshold checks (BSA/FinCEN)
+- KYC completion verification
+- Transaction limit enforcement
+- OFAC sanctions screening
+
+### 2. Calendar Guard (Day Count Conventions)
+**Deterministic day counting for interest accrual - no date hallucinations.**
+
+```python
+from qwed_finance import CalendarGuard, DayCountConvention
+from datetime import date
+
+guard = CalendarGuard()
+
+# Verify 30/360 day count
+result = guard.verify_day_count(
+    start_date=date(2026, 1, 1),
+    end_date=date(2026, 7, 1),
+    llm_days=180,
+    convention=DayCountConvention.THIRTY_360
+)
+# result.verified = True ✅
+```
+
+**Supports:**
+- 30/360 (Corporate bonds)
+- Actual/360 (T-Bills)
+- Actual/365 (UK gilts)
+- Business day verification
+
+### 3. Derivatives Guard (Black-Scholes)
+**Options pricing and margin verification using pure calculus.**
+
+```python
+from qwed_finance import DerivativesGuard, OptionType
+
+guard = DerivativesGuard()
+
+# Verify Black-Scholes call price
+result = guard.verify_black_scholes(
+    spot_price=100,
+    strike_price=105,
+    time_to_expiry=0.25,   # 3 months
+    risk_free_rate=0.05,
+    volatility=0.20,
+    option_type=OptionType.CALL,
+    llm_price="$3.50"
+)
+# result.greeks = {"delta": 0.4502, "gamma": 0.0389, ...}
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
