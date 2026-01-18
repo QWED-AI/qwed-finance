@@ -1,9 +1,9 @@
 """
 QWED-Finance: Deterministic verification for banking and financial AI
 
-v0.4.0 - Audit-Ready Banking Stack
+v0.5.0 - Full Ecosystem Integration
 
-Five Guards + Audit Trail:
+Five Guards + Audit Trail + Integrations:
 - ComplianceGuard: KYC/AML regulatory logic (Z3)
 - CalendarGuard: Day count conventions (SymPy)
 - DerivativesGuard: Options pricing & margin (Black-Scholes)
@@ -11,6 +11,8 @@ Five Guards + Audit Trail:
 - QueryGuard: SQL safety & table access (SQLGlot AST)
 - CrossGuard: Multi-layer verification integration
 - VerificationReceipt: Cryptographic audit trail
+- OpenResponsesIntegration: Agentic tool call verification
+- UCPIntegration: Payment token verification
 """
 
 from .finance_verifier import FinanceVerifier, VerificationResult
@@ -27,9 +29,18 @@ from .models.receipt import (
     ReceiptGenerator,
     AuditLog
 )
+from .integrations import (
+    OpenResponsesIntegration,
+    VerifiedToolCall,
+    ToolCallStatus,
+    UCPIntegration,
+    PaymentVerificationResult,
+    PaymentStatus,
+    UCPAction
+)
 from .schemas import LoanSchema, InvestmentSchema, AmortizationSchema
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     # Core Verifier
     "FinanceVerifier",
@@ -72,6 +83,17 @@ __all__ = [
     "VerificationStatus",
     "ReceiptGenerator",
     "AuditLog",
+    
+    # Open Responses Integration
+    "OpenResponsesIntegration",
+    "VerifiedToolCall",
+    "ToolCallStatus",
+    
+    # UCP Integration
+    "UCPIntegration",
+    "PaymentVerificationResult",
+    "PaymentStatus",
+    "UCPAction",
     
     # Schemas
     "LoanSchema",
