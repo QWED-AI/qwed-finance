@@ -237,6 +237,67 @@ QWED-Finance uses **SymPy** (symbolic math) instead of floating-point arithmetic
 | [qwed-verification](https://github.com/QWED-AI/qwed-verification) | Core verification engine |
 | [qwed-ucp](https://github.com/QWED-AI/qwed-ucp) | E-commerce verification |
 | [qwed-mcp](https://github.com/QWED-AI/qwed-mcp) | Claude Desktop integration |
+---
+
+## 🤖 GitHub Action for CI/CD
+
+Automatically verify your banking AI agents in your CI/CD pipeline!
+
+### Quick Setup
+
+1. Create `.github/workflows/qwed-verify.yml` in your repo:
+
+```yaml
+name: QWED Finance Verification
+
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: QWED-AI/qwed-finance@v1.1.1
+        with:
+          test-script: tests/verify_agent.py
+```
+
+2. Create your verification script `tests/verify_agent.py`:
+
+```python
+from qwed_finance import ComplianceGuard, OpenResponsesIntegration
+
+def test_aml_compliance():
+    guard = ComplianceGuard()
+    result = guard.verify_aml_flag(
+        amount=15000,
+        country_code="US",
+        llm_flagged=True
+    )
+    assert result.compliant, f"AML check failed!"
+    print("✅ Verification passed!")
+
+if __name__ == "__main__":
+    test_aml_compliance()
+```
+
+3. Commit and push - the action runs automatically! 🚀
+
+### Action Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `test-script` | ✅ | - | Path to your Python test script |
+| `python-version` | ❌ | `3.11` | Python version to use |
+| `fail-on-violation` | ❌ | `true` | Fail workflow on verification failure |
+
+### Blocking Merges
+
+To block PRs that fail verification, add this to your branch protection rules:
+- Settings → Branches → Add Rule
+- Check "Require status checks to pass"
+- Select "verify" job
 
 ---
 
