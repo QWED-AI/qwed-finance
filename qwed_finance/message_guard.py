@@ -173,7 +173,7 @@ class MessageGuard:
         ]
         
         for element in required:
-            if f"<{element" not in xml:
+            if f"<{element}" not in xml:
                 errors.append(f"Missing required element: {element}")
         
         return errors
@@ -191,7 +191,7 @@ class MessageGuard:
         ]
         
         for element in required:
-            if f"<{element" not in xml:
+            if f"<{element}" not in xml:
                 errors.append(f"Missing required element: {element}")
         
         return errors
