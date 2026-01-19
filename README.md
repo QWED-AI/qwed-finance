@@ -3,6 +3,7 @@
 **Deterministic verification middleware for banking and financial AI.**
 
 [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance)
+[![GitHub Developer Program](https://img.shields.io/badge/GitHub_Developer_Program-Member-4c1?style=flat&logo=github)](https://github.com/QWED-AI)
 [![PyPI](https://img.shields.io/pypi/v/qwed-finance?color=blue)](https://pypi.org/project/qwed-finance/)
 [![npm](https://img.shields.io/npm/v/@qwed-ai/finance?color=red)](https://www.npmjs.com/package/@qwed-ai/finance)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
