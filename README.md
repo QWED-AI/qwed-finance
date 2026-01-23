@@ -29,7 +29,48 @@ QWED-Finance is a **middleware layer** that applies QWED's deterministic verific
 
 ---
 
-## 🛡️ The Three Guards
+## 💡 What QWED-Finance Is (and Isn't)
+
+### ✅ QWED-Finance IS:
+- **Verification middleware** that checks LLM-generated financial outputs
+- **Deterministic** — uses symbolic math (SymPy) and formal proofs (Z3)
+- **Open source** — integrate into any fintech workflow, no vendor lock-in
+- **A safety layer** — catches calculation errors before they cause real losses
+
+### ❌ QWED-Finance is NOT:
+- ~~A trading platform~~ — use Bloomberg or Refinitiv for that
+- ~~A market data provider~~ — use AlphaSense or FactSet for that
+- ~~An analytics dashboard~~ — use Koyfin or Morningstar for that
+- ~~A replacement for risk models~~ — we just verify their outputs
+
+> **Think of QWED-Finance as the "unit test" for AI-generated financial calculations.**
+> 
+> Bloomberg provides data. AlphaSense analyzes. **QWED verifies the math.**
+
+---
+
+## 🆚 How We're Different from Financial AI Platforms
+
+| Aspect | Bloomberg / Refinitiv / AlphaSense | QWED-Finance |
+|--------|-------------------------------------|--------------|
+| **Approach** | Probabilistic AI analytics | Deterministic symbolic verification |
+| **Output** | "NPV is approximately $180.42" | `VERIFIED: NPV = $180.42 ✓` (with proof) |
+| **Accuracy** | ~95% (estimation, approximation) | 100% mathematical certainty |
+| **Tech** | ML models, LLMs | SymPy + Z3 SMT Solver |
+| **Model** | $20k+/year enterprise SaaS | Free (Apache 2.0 License) |
+| **Data** | Proprietary market data | Your data, verified locally |
+
+### Use Together (Best Practice)
+```
+┌──────────────┐     ┌───────────────┐     ┌──────────────┐
+│  Bloomberg   │ ──► │ QWED-Finance  │ ──► │   Verified   │
+│ (AI outputs) │     │   (verifies)  │     │   Output     │
+└──────────────┘     └───────────────┘     └──────────────┘
+```
+
+---
+
+## 🛡️ The Six Guards
 
 ### 1. Compliance Guard (Z3-Powered)
 **KYC/AML regulatory verification with formal boolean logic proofs.**
@@ -98,6 +139,85 @@ result = guard.verify_black_scholes(
     llm_price="$3.50"
 )
 # result.greeks = {"delta": 0.4502, "gamma": 0.0389, ...}
+```
+
+### 4. Message Guard (ISO 20022 / SWIFT)
+**Validate LLM-generated banking messages conform to industry standards.**
+
+```python
+from qwed_finance import MessageGuard, MessageType
+
+guard = MessageGuard()
+
+# Verify ISO 20022 pacs.008 message
+result = guard.verify_iso20022_xml(
+    xml_string=llm_generated_xml,
+    msg_type=MessageType.PACS_008
+)
+# result.valid = True/False with detailed errors
+
+# Verify IBAN checksum
+iban_result = guard.verify_iban(
+    iban="DE89370400440532013000",
+    llm_says_valid=True
+)
+# Uses MOD 97 checksum - 100% deterministic
+```
+
+**Supports:**
+- ISO 20022: pacs.008, pacs.002, camt.053, camt.054, pain.001
+- SWIFT MT: MT103, MT202, MT940, MT950
+- BIC/IBAN validation with MOD 97 checksum
+
+### 5. Query Guard (SQL Safety)
+**Prevent LLM-generated SQL from mutating data or accessing restricted tables.**
+
+```python
+from qwed_finance import QueryGuard
+
+guard = QueryGuard(allowed_tables={"accounts", "transactions"})
+
+# Verify query is read-only
+result = guard.verify_readonly_safety(
+    sql_query="SELECT * FROM accounts WHERE balance > 10000"
+)
+# result.safe = True ✅
+
+# Block mutation attempts
+result = guard.verify_readonly_safety(
+    sql_query="DROP TABLE accounts;"  # LLM hallucinated this
+)
+# result.safe = False, result.risk_level = CRITICAL ❌
+```
+
+**Prevents:**
+- DELETE, UPDATE, INSERT, DROP statements
+- Unauthorized table access
+- PII column exposure (SSN, passwords)
+- SQL injection patterns
+
+### 6. Cross Guard (Multi-Layer Verification)
+**Combine multiple guards for comprehensive verification.**
+
+```python
+from qwed_finance import CrossGuard
+
+guard = CrossGuard()
+
+# SWIFT message + Sanctions check
+result = guard.verify_swift_with_sanctions(
+    mt_string=llm_mt103_message,
+    sanctions_list=["SANCTIONED CORP", "BLOCKED ENTITY"]
+)
+# Validates MT format AND scans for sanctioned entities
+
+# SQL + PII protection
+result = guard.verify_query_with_pii_protection(
+    sql_query="SELECT * FROM customers",
+    allowed_tables=["customers", "orders"],
+    pii_columns=["ssn", "password", "credit_card"]
+)
+```
 
 ---
 
@@ -228,6 +348,92 @@ QWED-Finance uses **SymPy** (symbolic math) instead of floating-point arithmetic
 >>> verifier.add_money("$0.10", "$0.20")
 "$0.30"  # Exact!
 ```
+
+---
+
+## 🔒 Security & Privacy
+
+> **Your financial data never leaves your machine.**
+
+| Concern | QWED-Finance Approach |
+|---------|----------------------|
+| **Data Transmission** | ❌ No API calls, no cloud processing |
+| **Storage** | ❌ Nothing stored, pure computation |
+| **Dependencies** | ✅ Local-only (SymPy, Z3, SQLGlot) |
+| **Audit Trail** | ✅ Cryptographic receipts, fully reproducible |
+
+**Perfect for:**
+- Banks with strict data residency requirements
+- Transactions containing PII (SSN, account numbers)
+- SOC 2 / PCI-DSS compliant environments
+- Air-gapped trading systems
+
+---
+
+## ❓ FAQ
+
+<details>
+<summary><b>Is QWED-Finance free?</b></summary>
+
+Yes! QWED-Finance is open source under the Apache 2.0 license. Use it in commercial fintech products, modify it, distribute it - no restrictions.
+</details>
+
+<details>
+<summary><b>Does it handle floating-point precision issues?</b></summary>
+
+Yes! QWED-Finance uses SymPy for symbolic mathematics, avoiding the classic `0.1 + 0.2 = 0.30000000000000004` problem. All monetary calculations are exact.
+</details>
+
+<details>
+<summary><b>Can it verify Black-Scholes calculations?</b></summary>
+
+Yes! The DerivativesGuard includes full Black-Scholes implementation with Greeks (delta, gamma, theta, vega, rho). All calculations use symbolic math for precision.
+</details>
+
+<details>
+<summary><b>Does it support ISO 20022?</b></summary>
+
+Yes! MessageGuard validates ISO 20022 XML messages (pacs.008, camt.053, pain.001) and legacy SWIFT MT formats (MT103, MT202, MT940).
+</details>
+
+<details>
+<summary><b>Can I use it to prevent SQL injection in AI agents?</b></summary>
+
+Yes! QueryGuard uses SQLGlot for AST-based analysis. It can block mutations, restrict table access, and prevent PII column exposure - all deterministically.
+</details>
+
+<details>
+<summary><b>How fast is verification?</b></summary>
+
+Typically <5ms for simple calculations, <50ms for complex derivatives pricing. The symbolic engine is highly optimized.
+</details>
+
+---
+
+## 🗺️ Roadmap
+
+### ✅ Released (v1.0.0)
+- [x] FinanceVerifier: NPV, IRR, FV, PV calculations
+- [x] ComplianceGuard: KYC/AML verification (Z3)
+- [x] CalendarGuard: Day count conventions
+- [x] DerivativesGuard: Black-Scholes, Greeks
+- [x] MessageGuard: ISO 20022, SWIFT MT, IBAN/BIC
+- [x] QueryGuard: SQL safety, PII protection
+- [x] CrossGuard: Multi-layer verification
+- [x] Verification Receipts with audit trail
+- [x] TypeScript/npm SDK (@qwed-ai/finance)
+
+### 🚧 In Progress
+- [ ] Bond pricing verification (yield to maturity)
+- [ ] FX forward rate calculations
+- [ ] More regulatory frameworks (MiFID II, Basel III)
+
+### 🔮 Planned
+- [ ] Portfolio risk verification (VaR, CVaR)
+- [ ] Credit risk models (PD, LGD, EAD)
+- [ ] Real-time market data validation
+- [ ] Integration with OpenBB Terminal
+- [ ] VS Code extension for trading desk
 
 ---
 
