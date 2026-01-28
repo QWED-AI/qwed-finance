@@ -140,7 +140,8 @@ class FinanceVerifier:
             if real_solutions:
                 computed_irr = real_solutions[0]
             else:
-                computed_irr = None
+                # Fallback to numeric if SymPy fails to find real roots
+                computed_irr = self._compute_irr_numeric(cashflows)
         else:
             # Fallback: Newton-Raphson method
             computed_irr = self._compute_irr_numeric(cashflows)
