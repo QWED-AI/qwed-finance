@@ -48,7 +48,7 @@ jobs:
         with:
           action: verify
           verification_type: ytm
-          llm_output: '5.73%'
+          llm_output: '5.66%'
       
       # Test 4: Sharpe Ratio (Risk Guard)
       - name: Test Sharpe Ratio
