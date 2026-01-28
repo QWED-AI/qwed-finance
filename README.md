@@ -219,7 +219,145 @@ result = guard.verify_query_with_pii_protection(
 )
 ```
 
+### 7. Bond Guard (NEW in v2.0) 🆕
+**Yield and duration calculations for fixed income verification.**
+
+```python
+from qwed_finance import BondGuard
+
+guard = BondGuard()
+
+# Verify YTM calculation
+result = guard.verify_ytm(
+    face_value=1000,
+    coupon_rate=0.05,     # 5% annual coupon
+    price=950,            # Trading at discount
+    years_to_maturity=10,
+    llm_ytm="5.73%"       # LLM's answer
+)
+# Uses Newton-Raphson solver - 100% deterministic
+
+# Verify Duration
+result = guard.verify_duration(
+    face_value=1000,
+    coupon_rate=0.05,
+    ytm=0.06,
+    years_to_maturity=10,
+    llm_duration="7.8 years"
+)
+
+# Verify Convexity
+result = guard.verify_convexity(
+    face_value=1000,
+    coupon_rate=0.05,
+    ytm=0.06,
+    years_to_maturity=10,
+    llm_convexity="68.5"
+)
+```
+
+**Supports:**
+- Yield to Maturity (YTM) - Newton-Raphson solver
+- Macaulay Duration
+- Modified Duration
+- Convexity
+- Accrued Interest
+- Dirty Price
+
+### 8. FX Guard (NEW in v2.0) 🆕
+**Foreign exchange rate verification using Interest Rate Parity.**
+
+```python
+from qwed_finance import FXGuard
+
+guard = FXGuard()
+
+# Verify Forward Rate (Interest Rate Parity)
+result = guard.verify_forward_rate(
+    spot_rate=1.10,          # EUR/USD spot
+    domestic_rate=0.05,      # USD rate
+    foreign_rate=0.02,       # EUR rate
+    days=90,                 # 90-day forward
+    llm_forward="1.1081"     # LLM's answer
+)
+# Formula: F = S × (1 + rd × T) / (1 + rf × T)
+
+# Verify Cross Rate Triangulation
+result = guard.verify_cross_rate(
+    rate_a_b=1.10,           # EUR/USD
+    rate_b_c=150.0,          # USD/JPY
+    llm_rate_a_c="165.00",   # EUR/JPY
+    pair_a="EUR", pair_b="USD", pair_c="JPY"
+)
+
+# Verify NDF Settlement
+result = guard.verify_ndf_settlement(
+    notional=1000000,
+    contract_rate=1.10,
+    fixing_rate=1.12,
+    llm_settlement="$17,857.14"
+)
+```
+
+**Supports:**
+- Forward Rate (IRP)
+- Cross Rate Triangulation
+- Swap Points
+- NDF Settlement
+- Currency Conversion
+- Triangular Arbitrage Detection
+
+### 9. Risk Guard (NEW in v2.0) 🆕
+**Portfolio risk metrics verification - VaR, Beta, Sharpe.**
+
+```python
+from qwed_finance import RiskGuard
+
+guard = RiskGuard()
+
+# Verify VaR (Parametric)
+result = guard.verify_var(
+    portfolio_value=1000000,
+    daily_volatility=0.02,    # 2% daily vol
+    confidence_level=0.95,    # 95% confidence
+    holding_period_days=1,
+    llm_var="$32,900"         # LLM's answer
+)
+# Formula: VaR = P × σ × z × √t
+
+# Verify Sharpe Ratio
+result = guard.verify_sharpe_ratio(
+    portfolio_return=0.12,    # 12% annual return
+    risk_free_rate=0.03,      # 3% risk-free
+    portfolio_volatility=0.15,
+    llm_sharpe="0.60"
+)
+
+# Verify Beta
+result = guard.verify_beta(
+    asset_returns=[0.02, -0.01, 0.03, 0.01, -0.02],
+    market_returns=[0.01, -0.005, 0.02, 0.005, -0.01],
+    llm_beta="1.45"
+)
+
+# Verify Maximum Drawdown
+result = guard.verify_max_drawdown(
+    portfolio_values=[100, 110, 105, 95, 100, 98],
+    llm_max_dd="-13.64%"
+)
+```
+
+**Supports:**
+- Value at Risk (Parametric VaR)
+- Portfolio Beta
+- Sharpe Ratio
+- Sortino Ratio
+- Maximum Drawdown
+- Expected Shortfall (CVaR)
+- Information Ratio
+
 ---
+
 
 ## 🚀 Quick Start
 

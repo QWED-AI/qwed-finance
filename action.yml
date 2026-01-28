@@ -1,17 +1,63 @@
 # Source: Based on standard GitHub Action patterns
 name: 'QWED Finance Guard'
-description: 'Deterministically verify banking math (NPV, IRR) and prevent hallucinations in CI/CD.'
+description: 'Verify banking math (NPV, IRR, YTM, VaR) and prevent hallucinations in CI/CD.'
 author: 'QWED-AI'
 branding:
-  icon: 'shield'  # Shows up as a Shield in Marketplace
+  icon: 'shield'
   color: 'green'
+
 inputs:
-  file-path:
-    description: 'Path to the CSV or JSON file containing financial data'
-    required: true
-    default: 'data/transactions.csv'
+  action:
+    description: 'Action type: verify, scan-npv, scan-bonds, scan-fx, scan-risk'
+    required: false
+    default: 'verify'
+  data_file:
+    description: 'Path to CSV/JSON file with financial data'
+    required: false
+    default: ''
+  verification_type:
+    description: 'For verify mode: npv, irr, monthly_payment, compound, ytm, duration, forward_rate, var, sharpe'
+    required: false
+    default: 'npv'
+  cashflows:
+    description: 'Comma-separated cash flows for NPV/IRR (e.g., -1000,200,300,400)'
+    required: false
+  rate:
+    description: 'Rate value (discount rate, interest rate, etc.)'
+    required: false
+  llm_output:
+    description: 'LLM output to verify'
+    required: false
+  output_format:
+    description: 'Output format: text, json, sarif'
+    required: false
+    default: 'text'
+  fail_on_error:
+    description: 'Fail action if verification errors found'
+    required: false
+    default: 'true'
+
+outputs:
+  verified:
+    description: 'Whether verification passed'
+  computed_value:
+    description: 'QWED computed value'
+  errors_count:
+    description: 'Number of verification errors (for scan modes)'
+  badge_url:
+    description: 'QWED verified badge URL'
+  sarif_file:
+    description: 'Path to SARIF output file'
+
 runs:
   using: 'docker'
   image: 'Dockerfile'
-  args:
-    - ${{ inputs.file-path }}
+  env:
+    INPUT_ACTION: ${{ inputs.action }}
+    INPUT_DATA_FILE: ${{ inputs.data_file }}
+    INPUT_VERIFICATION_TYPE: ${{ inputs.verification_type }}
+    INPUT_CASHFLOWS: ${{ inputs.cashflows }}
+    INPUT_RATE: ${{ inputs.rate }}
+    INPUT_LLM_OUTPUT: ${{ inputs.llm_output }}
+    INPUT_OUTPUT_FORMAT: ${{ inputs.output_format }}
+    INPUT_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}

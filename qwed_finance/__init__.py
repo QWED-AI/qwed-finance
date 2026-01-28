@@ -1,15 +1,18 @@
 """
 QWED-Finance: Deterministic verification for banking and financial AI
 
-v1.0.0 - Production Ready
+v2.0.0 - Major Release
 
-Five Guards + Audit Trail + Integrations:
+Nine Guards + Audit Trail + Integrations:
 - ComplianceGuard: KYC/AML regulatory logic (Z3)
 - CalendarGuard: Day count conventions (SymPy)
 - DerivativesGuard: Options pricing & margin (Black-Scholes)
 - MessageGuard: ISO 20022 / SWIFT validation (XML Schema)
 - QueryGuard: SQL safety & table access (SQLGlot AST)
 - CrossGuard: Multi-layer verification integration
+- BondGuard: YTM, Duration, Convexity verification [NEW in v2.0]
+- FXGuard: Forward rates, Cross rates, NDF settlement [NEW in v2.0]
+- RiskGuard: VaR, Beta, Sharpe, Sortino, Max Drawdown [NEW in v2.0]
 - VerificationReceipt: Cryptographic audit trail
 - OpenResponsesIntegration: Agentic tool call verification
 - UCPIntegration: Payment token verification
@@ -22,6 +25,9 @@ from .derivatives_guard import DerivativesGuard, DerivativesResult, OptionType
 from .message_guard import MessageGuard, MessageResult, MessageType, SwiftMtType
 from .query_guard import QueryGuard, QueryResult, QueryRisk
 from .cross_guard import CrossGuard, CrossGuardResult
+from .bond_guard import BondGuard, BondResult
+from .fx_guard import FXGuard, FXResult, QuoteConvention
+from .risk_guard import RiskGuard, RiskResult, VaRMethod, ConfidenceLevel
 from .models.receipt import (
     VerificationReceipt, 
     VerificationEngine, 
@@ -40,7 +46,7 @@ from .integrations import (
 )
 from .schemas import LoanSchema, InvestmentSchema, AmortizationSchema
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__ = [
     # Core Verifier
     "FinanceVerifier",
@@ -77,6 +83,21 @@ __all__ = [
     "CrossGuard",
     "CrossGuardResult",
     
+    # Bond Guard (NEW in v2.0)
+    "BondGuard",
+    "BondResult",
+    
+    # FX Guard (NEW in v2.0)
+    "FXGuard",
+    "FXResult",
+    "QuoteConvention",
+    
+    # Risk Guard (NEW in v2.0)
+    "RiskGuard",
+    "RiskResult",
+    "VaRMethod",
+    "ConfidenceLevel",
+    
     # Audit Trail
     "VerificationReceipt",
     "VerificationEngine",
@@ -100,3 +121,4 @@ __all__ = [
     "InvestmentSchema", 
     "AmortizationSchema",
 ]
+

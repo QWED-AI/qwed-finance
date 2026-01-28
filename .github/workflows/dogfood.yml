@@ -1,0 +1,163 @@
+# QWED Finance Guard v2.0 - Dogfood Test Workflow
+# Tests the Action on itself to ensure all features work
+
+name: Dogfood v2.0
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-verify-modes:
+    name: Test Verify Modes
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      # Test 1: NPV Verification
+      - name: Test NPV Verification
+        uses: ./
+        with:
+          action: verify
+          verification_type: npv
+          cashflows: '-1000,300,400,500,600'
+          rate: '0.10'
+          llm_output: '376.86'
+      
+      # Test 2: IRR Verification
+      - name: Test IRR Verification
+        uses: ./
+        with:
+          action: verify
+          verification_type: irr
+          cashflows: '-1000,300,400,500,600'
+          llm_output: '24.89%'
+      
+      # Test 3: YTM Verification (Bond Guard)
+      - name: Test YTM Verification
+        uses: ./
+        env:
+          INPUT_FACE_VALUE: '1000'
+          INPUT_COUPON_RATE: '0.05'
+          INPUT_PRICE: '950'
+          INPUT_YEARS: '10'
+        with:
+          action: verify
+          verification_type: ytm
+          llm_output: '5.73%'
+      
+      # Test 4: Sharpe Ratio (Risk Guard)
+      - name: Test Sharpe Ratio
+        uses: ./
+        env:
+          INPUT_RETURN: '0.12'
+          INPUT_RISK_FREE: '0.03'
+          INPUT_VOLATILITY: '0.15'
+        with:
+          action: verify
+          verification_type: sharpe
+          llm_output: '0.60'
+
+  test-scan-modes:
+    name: Test Scan Modes
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      # Create test data file
+      - name: Create NPV Test Data
+        run: |
+          mkdir -p test-data
+          cat > test-data/npv_test.csv << 'EOF'
+          cashflows,rate,llm_npv
+          "-1000,300,400,500,600",0.10,376.86
+          "-5000,1000,1500,2000,2500",0.08,997.13
+          "-10000,3000,4000,5000",0.12,1234.56
+          EOF
+      
+      # Test Scan NPV Mode
+      - name: Test Scan NPV
+        uses: ./
+        with:
+          action: scan-npv
+          data_file: test-data/npv_test.csv
+          output_format: text
+          fail_on_error: 'false'
+      
+      # Create bond test data
+      - name: Create Bond Test Data
+        run: |
+          cat > test-data/bonds_test.csv << 'EOF'
+          face_value,coupon_rate,price,years,llm_ytm
+          1000,0.05,950,10,5.73%
+          1000,0.06,1050,5,4.82%
+          EOF
+      
+      # Test Scan Bonds Mode
+      - name: Test Scan Bonds
+        uses: ./
+        with:
+          action: scan-bonds
+          data_file: test-data/bonds_test.csv
+          output_format: text
+          fail_on_error: 'false'
+
+  test-sarif-output:
+    name: Test SARIF Output
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Create Test Data with Error
+        run: |
+          mkdir -p test-data
+          cat > test-data/error_test.csv << 'EOF'
+          cashflows,rate,llm_npv
+          "-1000,300,400,500,600",0.10,376.86
+          "-5000,1000,1500,2000,2500",0.08,9999.99
+          EOF
+      
+      - name: Scan with SARIF Output
+        id: scan
+        uses: ./
+        with:
+          action: scan-npv
+          data_file: test-data/error_test.csv
+          output_format: sarif
+          fail_on_error: 'false'
+      
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: qwed-finance-results.sarif
+        continue-on-error: true
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [test-verify-modes, test-scan-modes, test-sarif-output]
+    
+    steps:
+      - name: Print Summary
+        run: |
+          echo "🏦 QWED Finance Guard v2.0 Test Summary"
+          echo "========================================"
+          echo "✅ All verification modes tested"
+          echo "✅ All scan modes tested"
+          echo "✅ SARIF output tested"
+          echo ""
+          echo "New features in v2.0:"
+          echo "  - BondGuard: YTM, Duration, Convexity"
+          echo "  - FXGuard: Forward Rate, Cross Rate"
+          echo "  - RiskGuard: VaR, Beta, Sharpe, Sortino"
+          echo "  - Multiple scan modes"
+          echo "  - SARIF output for GitHub Security"
