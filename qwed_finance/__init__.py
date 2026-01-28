@@ -46,7 +46,7 @@ from .integrations import (
 )
 from .schemas import LoanSchema, InvestmentSchema, AmortizationSchema
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __all__ = [
     # Core Verifier
     "FinanceVerifier",
