@@ -107,7 +107,7 @@ class QueryGuard:
             risk = QueryRisk.CRITICAL
         elif len(violations) > 0:
             risk = QueryRisk.HIGH
-        elif "JOIN" in sql_upper or "SUBQUERY" in query_type:
+        elif "JOIN" in sql_upper or "SUBQUERY" in query_type or "UNION" in sql_upper:
             risk = QueryRisk.MEDIUM
         else:
             risk = QueryRisk.SAFE
@@ -152,6 +152,11 @@ class QueryGuard:
             elif isinstance(parsed, exp.Create):
                 result["query_type"] = "CREATE"
                 result["violations"].append("DDL detected: CREATE statement")
+            
+            # Check for mutations in subqueries
+            for node in parsed.find_all(exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create):
+                if node == parsed: continue # Already handled top-level
+                result["violations"].append(f"Mutation detected in subquery: {node.key} statement")
             
             # Extract table names
             for table in parsed.find_all(exp.Table):
@@ -323,7 +328,8 @@ class QueryGuard:
         injection_patterns = [
             r"'.*--",                    # Comment after quote
             r"'.*;\s*(DROP|DELETE|UPDATE|INSERT)",  # Chained statements
-            r"'.*OR\s+'1'\s*=\s*'1",    # OR 1=1
+            r"'.*OR\s+['\d]+\s*=\s*['\d]+",    # OR 1=1 (quoted or numeric)
+            r"\bOR\s+\d+\s*=\s*\d+",           # OR 1=1 (numeric)
             r"UNION\s+SELECT",           # UNION injection
             r";\s*DROP\s+TABLE",         # DROP TABLE injection
         ]
@@ -333,7 +339,6 @@ class QueryGuard:
             if re.search(pattern, user_input, re.IGNORECASE):
                 violations.append(f"SQL injection pattern detected in user input")
                 break
-        
         # Check for multiple statements (statement stacking)
         if ";" in user_input and len(user_input.split(";")) > 1:
             violations.append("Multiple statements in user input (possible injection)")
