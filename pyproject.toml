@@ -38,6 +38,7 @@ classifiers = [
 ]
 dependencies = [
     "sympy>=1.12",
+    "sqlglot>=20.0.0",
 ]
 
 [project.optional-dependencies]

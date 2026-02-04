@@ -27,7 +27,9 @@ class TestFloatingPointAttacks:
         large_num = 9007199254740993  # 2^53 + 1
         result = self.verifier.add_money(f"${large_num}", "$0.00")
         # Should handle large numbers correctly
-        assert str(large_num) in result
+        # Should handle large numbers correctly
+        # The result includes commas for formatting
+        assert "9,007,199,254,740,993" in result
     
     def test_very_small_number(self):
         """Numbers smaller than machine epsilon"""
@@ -39,7 +41,7 @@ class TestFloatingPointAttacks:
         """Extremely large currency amount"""
         huge = "999999999999999999.99"
         result = self.verifier.add_money(f"${huge}", "$0.01")
-        assert "$1000000000000000000.00" in result
+        assert "$1,000,000,000,000,000,000.00" in result
     
     def test_negative_money(self):
         """Negative money amounts (should work for balances)"""

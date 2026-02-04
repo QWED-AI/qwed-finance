@@ -17,7 +17,7 @@ class TestNPVVerification:
         result = self.verifier.verify_npv(
             cashflows=[-1000, 300, 400, 400, 300],
             rate=0.10,
-            llm_output="$180.42"
+            llm_output="$108.74"
         )
         assert result.verified == True
         assert "NPV" in result.formula_used
