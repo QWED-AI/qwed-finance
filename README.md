@@ -487,7 +487,7 @@ QWED-Finance uses **SymPy** (symbolic math) instead of floating-point arithmetic
 "$0.30"  # Exact!
 ```
 
----
+> 📖 **See [Determinism Guarantee](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)** for how QWED ensures 100% reproducible verification.
 
 ## 🔒 Security & Privacy
 
@@ -561,14 +561,17 @@ Typically <5ms for simple calculations, <50ms for complex derivatives pricing. T
 - [x] Verification Receipts with audit trail
 - [x] TypeScript/npm SDK (@qwed-ai/finance)
 
+### ✅ Released (v2.0.0)
+- [x] BondGuard: YTM, Duration, Convexity verification
+- [x] FXGuard: Forward rates, Cross rates, NDF settlement
+- [x] RiskGuard: VaR, Beta, Sharpe, Sortino, Max Drawdown
+- [x] `verification_mode` field (SYMBOLIC/HEURISTIC)
+
 ### 🚧 In Progress
-- [ ] Bond pricing verification (yield to maturity)
-- [ ] FX forward rate calculations
 - [ ] More regulatory frameworks (MiFID II, Basel III)
+- [ ] Credit risk models (PD, LGD, EAD)
 
 ### 🔮 Planned
-- [ ] Portfolio risk verification (VaR, CVaR)
-- [ ] Credit risk models (PD, LGD, EAD)
 - [ ] Real-time market data validation
 - [ ] Integration with OpenBB Terminal
 - [ ] VS Code extension for trading desk
@@ -648,15 +651,32 @@ To block PRs that fail verification, add this to your branch protection rules:
 
 ## 🏅 Add "Verified by QWED" Badge
 
-Show that your project uses QWED verification! Copy this to your README:
+Show that your project uses QWED verification! Choose the badge that matches your use case:
 
+### Badge Variants
+
+| Badge | Use Case | Markdown |
+|-------|----------|----------|
+| [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance) | **General** - Any QWED-Finance integration | See below |
+| [![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy) | **FinanceVerifier/BondGuard** - Symbolic math only | See below |
+| [![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy) | **ComplianceGuard** - Z3 + LLM hybrid | See below |
+
+### Markdown Code
+
+**General Badge:**
 ```markdown
 [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance)
 ```
 
-**Preview:**
+**100% Deterministic (for FinanceVerifier, CalendarGuard, BondGuard, FXGuard):**
+```markdown
+[![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)
+```
 
-[![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance)
+**AI + Verification (for ComplianceGuard with Z3):**
+```markdown
+[![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)
+```
 
 ---
 
