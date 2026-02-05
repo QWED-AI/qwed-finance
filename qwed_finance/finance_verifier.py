@@ -125,6 +125,8 @@ class FinanceVerifier:
         Returns:
             VerificationResult
         """
+        used_fallback = False
+        
         if self._sympy_available:
             from sympy import symbols, solve, Rational
             
@@ -143,15 +145,18 @@ class FinanceVerifier:
             else:
                 # Fallback to numeric if SymPy fails to find real roots
                 computed_irr = self._compute_irr_numeric(cashflows)
+                used_fallback = True
         else:
             # Fallback: Newton-Raphson method
             computed_irr = self._compute_irr_numeric(cashflows)
+            used_fallback = True
         
         if computed_irr is None:
             return VerificationResult(
                 verified=False,
                 llm_value=llm_output,
                 computed_value="No valid IRR exists",
+                verification_mode="HEURISTIC",
                 confidence="COMPUTATION_FAILED"
             )
         
@@ -168,7 +173,8 @@ class FinanceVerifier:
             llm_value=llm_output,
             computed_value=f"{computed_irr * 100:.2f}%",
             difference=f"{difference * 100:.4f}%" if difference > 0 else None,
-            formula_used="IRR: NPV(r) = 0"
+            formula_used="IRR: NPV(r) = 0",
+            verification_mode="HEURISTIC" if used_fallback else "SYMBOLIC"
         )
     
     def _compute_irr_numeric(self, cashflows: List[float], max_iter: int = 100) -> Optional[float]:
