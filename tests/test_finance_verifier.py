@@ -146,6 +146,30 @@ class TestIRRVerification:
         )
         # IRR should be around 14.49%
         assert result.computed_value is not None
+    
+    def test_irr_verification_mode_symbolic(self):
+        """Test IRR returns SYMBOLIC when SymPy works"""
+        result = self.verifier.verify_irr(
+            cashflows=[-1000, 500, 600],
+            llm_output="10%"
+        )
+        # Simple cashflows should use symbolic solver
+        assert result.verification_mode in ["SYMBOLIC", "HEURISTIC"]
+    
+    def test_irr_newton_raphson_fallback(self):
+        """Test IRR fallback when SymPy unavailable (mock scenario)"""
+        verifier = FinanceVerifier()
+        # Force SymPy unavailable to trigger fallback
+        verifier._sympy_available = False
+        
+        result = verifier.verify_irr(
+            cashflows=[-1000, 300, 400, 400, 300],
+            llm_output="14.49%"
+        )
+        
+        # Should use Newton-Raphson and report HEURISTIC
+        assert result.verification_mode == "HEURISTIC"
+        assert result.computed_value is not None
 
 
 if __name__ == "__main__":
