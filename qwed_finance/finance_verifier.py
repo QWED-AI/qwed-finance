@@ -17,6 +17,7 @@ class VerificationResult:
     computed_value: str
     difference: Optional[str] = None
     formula_used: Optional[str] = None
+    verification_mode: str = "SYMBOLIC"  # SYMBOLIC = deterministic, HEURISTIC = fallback
     confidence: str = "SYMBOLIC_PROOF"
 
 
