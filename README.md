@@ -698,4 +698,6 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 [![Twitter](https://img.shields.io/badge/Twitter-@rahuldass29-1DA1F2?style=flat&logo=twitter)](https://x.com/rahuldass29)
 
+<a href="https://snyk.io/test/github/QWED-AI/qwed-finance"><img src="https://snyk.io/test/github/QWED-AI/qwed-finance/badge.svg" alt="Known Vulnerabilities" /></a>
+
 </div>
