@@ -4,6 +4,8 @@
 
 [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance)
 [![GitHub Developer Program](https://img.shields.io/badge/GitHub_Developer_Program-Member-4c1?style=flat&logo=github)](https://github.com/QWED-AI)
+[![Secured by Snyk](https://img.shields.io/badge/Secured_by-Snyk-4C3DBC?style=flat&logo=snyk&logoColor=white)](https://snyk.io/test/github/QWED-AI/qwed-finance)
+[![Docs by Mintlify](https://img.shields.io/badge/Docs_by-Mintlify-0f1117?style=flat&logo=mintlify&logoColor=white)](https://docs.qwedai.com)
 [![PyPI](https://img.shields.io/pypi/v/qwed-finance?color=blue)](https://pypi.org/project/qwed-finance/)
 [![npm](https://img.shields.io/npm/v/@qwed-ai/finance?color=red)](https://www.npmjs.com/package/@qwed-ai/finance)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
