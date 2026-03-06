@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov
+          pip install pytest==8.* pytest-cov==5.*
           pip install -e .
 
       - name: Run tests with coverage

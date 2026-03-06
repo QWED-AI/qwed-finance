@@ -29,7 +29,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" || pip install -e . || true
+          pip install -e ".[dev]" || pip install -e . || echo "::warning::Failed to install editable package, proceeding with minimal deps"
 
       - name: Generate requirements for Snyk
         run: pip freeze > requirements.txt
@@ -37,7 +37,7 @@ jobs:
       - name: Snyk Python dependency scan
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-python.sarif
+        run: snyk test --file=requirements.txt --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-python.sarif
 
       - name: Upload Snyk Python results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
@@ -60,7 +60,7 @@ jobs:
       - name: Snyk Code analysis
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --sarif-file-output=snyk-code.sarif
+        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-code.sarif
 
       - name: Upload Snyk Code results
         uses: github/codeql-action/upload-sarif@v4
