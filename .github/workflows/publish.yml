@@ -5,14 +5,12 @@ on:
     types: [published]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   build:
     name: Build distribution
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
     - uses: actions/checkout@v4
@@ -46,6 +44,7 @@ jobs:
       url: https://pypi.org/p/qwed-finance
     
     permissions:
+      contents: read
       id-token: write
 
     steps:
@@ -56,4 +55,4 @@ jobs:
         path: dist/
     
     - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1

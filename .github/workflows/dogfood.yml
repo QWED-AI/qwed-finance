@@ -9,13 +9,12 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-
 jobs:
   test-verify-modes:
     name: Test Verify Modes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout
@@ -68,6 +67,8 @@ jobs:
   test-scan-modes:
     name: Test Scan Modes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
       - name: Checkout
@@ -114,6 +115,9 @@ jobs:
   test-sarif-output:
     name: Test SARIF Output
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     
     steps:
       - name: Checkout
@@ -147,6 +151,8 @@ jobs:
   summary:
     name: Summary
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [test-verify-modes, test-scan-modes, test-sarif-output]
     
     steps:

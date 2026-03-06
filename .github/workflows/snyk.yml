@@ -1,0 +1,69 @@
+name: Snyk Security
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 9 * * 1'
+
+jobs:
+  snyk-python:
+    name: Snyk Python Dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk@1.1303.1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" || pip install -e . || true
+
+      - name: Generate requirements for Snyk
+        run: pip freeze > requirements.txt
+
+      - name: Snyk Python dependency scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-python.sarif
+
+      - name: Upload Snyk Python results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('snyk-python.sarif') != ''
+        with:
+          sarif_file: snyk-python.sarif
+
+  snyk-code:
+    name: Snyk Code SAST
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk@1.1303.1
+
+      - name: Snyk Code analysis
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --sarif-file-output=snyk-code.sarif
+
+      - name: Upload Snyk Code results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        with:
+          sarif_file: snyk-code.sarif
