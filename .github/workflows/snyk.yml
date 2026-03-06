@@ -11,6 +11,7 @@ on:
 jobs:
   snyk-python:
     name: Snyk Python Dependencies
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,8 +29,11 @@ jobs:
 
       - name: Install Python dependencies
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" || pip install -e . || echo "::warning::Failed to install editable package, proceeding with minimal deps"
+          if ! pip install -e ".[dev]"; then
+            pip install -e .
+          fi
 
       - name: Generate requirements for Snyk
         run: pip freeze > requirements.txt
@@ -47,6 +51,7 @@ jobs:
 
   snyk-code:
     name: Snyk Code SAST
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
