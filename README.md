@@ -373,7 +373,8 @@ result = guard.verify_payment_message({
     "NbOfTxs": 1,
     "TtlIntrBkSttlmAmt": {"amount": 50000.00, "currency": "USD"}
 })
-# result = {"verified": True, "standard": "ISO 20022"}
+# result.verified = True  ✅
+# result.standard = "ISO 20022"
 ```
 
 ---

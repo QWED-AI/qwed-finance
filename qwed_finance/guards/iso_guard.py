@@ -1,6 +1,6 @@
 import json
 import jsonschema
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from dataclasses import dataclass, field
 
 
