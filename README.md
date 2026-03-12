@@ -72,7 +72,7 @@ QWED-Finance is a **middleware layer** that applies QWED's deterministic verific
 
 ---
 
-## 🛡️ The Six Guards
+## 🛡️ The Ten Guards
 
 ### 1. Compliance Guard (Z3-Powered)
 **KYC/AML regulatory verification with formal boolean logic proofs.**
@@ -358,6 +358,25 @@ result = guard.verify_max_drawdown(
 - Expected Shortfall (CVaR)
 - Information Ratio
 
+### 10. ISO Guard (Banking Schema Validation)
+**Validate AI-generated payment messages against ISO 20022 JSON schemas.**
+
+```python
+from qwed_finance import ISOGuard
+
+guard = ISOGuard()
+
+# Verify ISO 20022 pacs.008 payment message
+result = guard.verify_payment_message({
+    "MsgId": "MSG001",
+    "CreDtTm": "2026-01-15T10:30:00Z",
+    "NbOfTxs": 1,
+    "TtlIntrBkSttlmAmt": {"amount": 50000.00, "currency": "USD"}
+})
+# result.verified = True  ✅
+# result.standard = "ISO 20022"
+```
+
 ---
 
 
@@ -585,8 +604,11 @@ Typically <5ms for simple calculations, <50ms for complex derivatives pricing. T
 | Package | Description |
 |---------|-------------|
 | [qwed-verification](https://github.com/QWED-AI/qwed-verification) | Core verification engine |
+| [qwed-legal](https://github.com/QWED-AI/qwed-legal) | Legal contract verification |
+| [qwed-tax](https://github.com/QWED-AI/qwed-tax) | Tax calculation verification |
 | [qwed-ucp](https://github.com/QWED-AI/qwed-ucp) | E-commerce verification |
 | [qwed-mcp](https://github.com/QWED-AI/qwed-mcp) | Claude Desktop integration |
+
 ---
 
 ## 🤖 GitHub Action for CI/CD
@@ -608,7 +630,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: QWED-AI/qwed-finance@v1.1.1
+      - uses: QWED-AI/qwed-finance@v2.0.1
         with:
           test-script: tests/verify_agent.py
 ```

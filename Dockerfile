@@ -8,11 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir pandas sympy
-
-# Copy the entire qwed_finance package (local)
+# Install Python dependencies from project metadata (single source of truth)
+COPY pyproject.toml /app/pyproject.toml
 COPY qwed_finance/ /app/qwed_finance/
+RUN pip install --no-cache-dir /app pandas
 
 # Copy action entrypoint
 COPY action_entrypoint.py /app/action_entrypoint.py
