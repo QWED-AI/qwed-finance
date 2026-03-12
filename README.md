@@ -629,7 +629,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: QWED-AI/qwed-finance@v2
+      - uses: QWED-AI/qwed-finance@v2.0.1
         with:
           test-script: tests/verify_agent.py
 ```

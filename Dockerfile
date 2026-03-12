@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip install --no-cache-dir pandas sympy
+RUN pip install --no-cache-dir pandas sympy sqlglot z3-solver jsonschema
 
 # Copy the entire qwed_finance package (local)
 COPY qwed_finance/ /app/qwed_finance/

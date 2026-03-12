@@ -29,7 +29,7 @@ from .cross_guard import CrossGuard, CrossGuardResult
 from .bond_guard import BondGuard, BondResult
 from .fx_guard import FXGuard, FXResult, QuoteConvention
 from .risk_guard import RiskGuard, RiskResult, VaRMethod, ConfidenceLevel
-from .guards.iso_guard import ISOGuard
+from .guards.iso_guard import ISOGuard, ISOResult
 from .models.receipt import (
     VerificationReceipt, 
     VerificationEngine, 
@@ -102,6 +102,7 @@ __all__ = [
 
     # ISO Guard
     "ISOGuard",
+    "ISOResult",
     
     # Audit Trail
     "VerificationReceipt",
