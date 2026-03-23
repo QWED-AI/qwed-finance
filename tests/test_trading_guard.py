@@ -298,3 +298,110 @@ class TestBatchVerification:
         summary = guard.verify_order_batch(orders)
         assert summary["all_verified"] is True
         assert summary["passed"] == 2
+
+
+# ── MarketRules validation ──────────────────────────────────
+
+class TestMarketRulesValidation:
+
+    def test_zero_tick_size_raises(self):
+        with pytest.raises(ValueError, match="tick_size must be > 0"):
+            MarketRules(tick_size=Decimal("0"))
+
+    def test_negative_tick_size_raises(self):
+        with pytest.raises(ValueError, match="tick_size must be > 0"):
+            MarketRules(tick_size=Decimal("-0.01"))
+
+    def test_inverted_bounds_raises(self):
+        with pytest.raises(ValueError, match="min_price must be <= max_price"):
+            MarketRules(
+                tick_size=Decimal("0.01"),
+                min_price=Decimal("0.99"),
+                max_price=Decimal("0.01"),
+            )
+
+    def test_zero_max_contracts_raises(self):
+        with pytest.raises(ValueError, match="max_contracts must be >= 1"):
+            MarketRules(tick_size=Decimal("0.01"), max_contracts=0)
+
+
+# ── Finite price checks ────────────────────────────────────
+
+class TestFinitePriceCheck:
+
+    def test_nan_price_rejected(self, guard: TradingGuard):
+        result = guard.verify_order(
+            market_id="PRES-2028-WIN",
+            contract_type="binary",
+            price="NaN",
+            volume=10,
+        )
+        assert result.verified is False
+        assert result.risk == "INVALID_PRICE"
+        assert "price_finite" in result.checks_failed
+
+    def test_infinity_price_rejected(self, guard: TradingGuard):
+        result = guard.verify_order(
+            market_id="PRES-2028-WIN",
+            contract_type="binary",
+            price="Infinity",
+            volume=10,
+        )
+        assert result.verified is False
+        assert result.risk == "INVALID_PRICE"
+
+
+# ── Type hardening ──────────────────────────────────────────
+
+class TestTypeHardening:
+
+    def test_non_string_side_rejected(self, guard: TradingGuard):
+        result = guard.verify_order(
+            market_id="PRES-2028-WIN",
+            contract_type="binary",
+            price=Decimal("0.50"),
+            volume=10,
+            side=123,  # type: ignore[arg-type]
+        )
+        assert result.verified is False
+        assert "order_side" in result.checks_failed
+
+    def test_boolean_volume_rejected(self, guard: TradingGuard):
+        result = guard.verify_order(
+            market_id="PRES-2028-WIN",
+            contract_type="binary",
+            price=Decimal("0.50"),
+            volume=True,  # type: ignore[arg-type]
+        )
+        assert result.verified is False
+        assert "volume_min" in result.checks_failed
+
+
+# ── Batch error handling ────────────────────────────────────
+
+class TestBatchErrorHandling:
+
+    def test_batch_missing_keys(self, guard: TradingGuard):
+        orders = [
+            {"market_id": "PRES-2028-WIN"},  # missing contract_type, price, volume
+            {"market_id": "PRES-2028-WIN", "contract_type": "binary",
+             "price": Decimal("0.50"), "volume": 10},
+        ]
+        summary = guard.verify_order_batch(orders)
+        assert summary["total"] == 2
+        assert summary["failed"] == 1
+        assert summary["passed"] == 1
+        assert "batch_shape" in summary["results"][0].checks_failed
+
+    def test_batch_float_price_caught(self, guard: TradingGuard):
+        orders = [
+            {"market_id": "PRES-2028-WIN", "contract_type": "binary",
+             "price": 0.65, "volume": 10},  # float → TypeError
+            {"market_id": "PRES-2028-WIN", "contract_type": "binary",
+             "price": Decimal("0.50"), "volume": 10},
+        ]
+        summary = guard.verify_order_batch(orders)
+        assert summary["total"] == 2
+        assert summary["failed"] == 1
+        assert summary["passed"] == 1
+        assert "order_exception" in summary["results"][0].checks_failed

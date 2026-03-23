@@ -41,6 +41,14 @@ class MarketRules:
         default_factory=lambda: ["binary", "categorical"]
     )
 
+    def __post_init__(self) -> None:
+        if self.tick_size <= Decimal("0"):
+            raise ValueError("tick_size must be > 0")
+        if self.min_price > self.max_price:
+            raise ValueError("min_price must be <= max_price")
+        if self.max_contracts < 1:
+            raise ValueError("max_contracts must be >= 1")
+
 
 @dataclass
 class TradingResult:
@@ -125,6 +133,14 @@ class TradingGuard:
                 message=f"Cannot parse price: {price!r}",
                 checks_failed=["price_parse"],
             )
+        if not price_dec.is_finite():
+            return TradingResult(
+                verified=False,
+                market_id=market_id,
+                risk="INVALID_PRICE",
+                message=f"Price must be a finite decimal, got {price!r}",
+                checks_failed=["price_finite"],
+            )
 
         # --- Resolve market rules ---
         rules = self._rules.get(market_id)
@@ -186,7 +202,7 @@ class TradingGuard:
         side: str, passed: List[str], failed: List[str],
     ) -> None:
         valid_sides = {"buy", "sell"}
-        if side.lower() not in valid_sides:
+        if not isinstance(side, str) or side.lower() not in valid_sides:
             failed.append("order_side")
         else:
             passed.append("order_side")
@@ -216,7 +232,7 @@ class TradingGuard:
         volume: int, rules: MarketRules,
         passed: List[str], failed: List[str],
     ) -> None:
-        if not isinstance(volume, int) or volume < 1:
+        if isinstance(volume, bool) or not isinstance(volume, int) or volume < 1:
             failed.append("volume_min")
         elif volume > rules.max_contracts:
             failed.append("volume_max")
@@ -237,13 +253,35 @@ class TradingGuard:
         failed = 0
 
         for order in orders:
-            result = self.verify_order(
-                market_id=order["market_id"],
-                contract_type=order["contract_type"],
-                price=order["price"],
-                volume=order["volume"],
-                side=order.get("side", "buy"),
-            )
+            missing = [
+                key for key in ("market_id", "contract_type", "price", "volume")
+                if key not in order
+            ]
+            if missing:
+                result = TradingResult(
+                    verified=False,
+                    market_id=str(order.get("market_id", "")),
+                    risk="TRADE_VERIFICATION_FAILED",
+                    message=f"Missing required fields: {', '.join(missing)}",
+                    checks_failed=["batch_shape"],
+                )
+            else:
+                try:
+                    result = self.verify_order(
+                        market_id=order["market_id"],
+                        contract_type=order["contract_type"],
+                        price=order["price"],
+                        volume=order["volume"],
+                        side=order.get("side", "buy"),
+                    )
+                except (TypeError, AttributeError) as exc:
+                    result = TradingResult(
+                        verified=False,
+                        market_id=str(order.get("market_id", "")),
+                        risk="TRADE_VERIFICATION_FAILED",
+                        message=str(exc),
+                        checks_failed=["order_exception"],
+                    )
             results.append(result)
             if result.verified:
                 passed += 1
