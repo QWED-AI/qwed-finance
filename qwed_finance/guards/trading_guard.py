@@ -114,9 +114,6 @@ class TradingGuard:
                 "Use Decimal or str for symbolic precision."
             )
 
-        checks_passed: List[str] = []
-        checks_failed: List[str] = []
-
         # --- Convert price to Decimal ---
         try:
             price_dec = Decimal(str(price))
@@ -140,40 +137,15 @@ class TradingGuard:
                 checks_failed=["market_lookup"],
             )
 
-        # --- Check 1: Contract type ---
-        if contract_type not in rules.allowed_contract_types:
-            checks_failed.append("contract_type")
-        else:
-            checks_passed.append("contract_type")
+        # --- Run all checks ---
+        checks_passed: List[str] = []
+        checks_failed: List[str] = []
 
-        # --- Check 2: Order side ---
-        valid_sides = {s.value for s in OrderSide}
-        if side.lower() not in valid_sides:
-            checks_failed.append("order_side")
-        else:
-            checks_passed.append("order_side")
-
-        # --- Check 3: Tick size ---
-        if rules.tick_size > 0:
-            remainder = price_dec % rules.tick_size
-            if remainder != 0:
-                checks_failed.append("tick_size")
-            else:
-                checks_passed.append("tick_size")
-
-        # --- Check 4: Price bounds ---
-        if price_dec < rules.min_price or price_dec > rules.max_price:
-            checks_failed.append("price_bounds")
-        else:
-            checks_passed.append("price_bounds")
-
-        # --- Check 5: Volume limits ---
-        if not isinstance(volume, int) or volume < 1:
-            checks_failed.append("volume_min")
-        elif volume > rules.max_contracts:
-            checks_failed.append("volume_max")
-        else:
-            checks_passed.append("volume")
+        self._check_contract_type(contract_type, rules, checks_passed, checks_failed)
+        self._check_order_side(side, checks_passed, checks_failed)
+        self._check_tick_size(price_dec, rules, checks_passed, checks_failed)
+        self._check_price_bounds(price_dec, rules, checks_passed, checks_failed)
+        self._check_volume(volume, rules, checks_passed, checks_failed)
 
         # --- Build result ---
         if checks_failed:
@@ -196,6 +168,60 @@ class TradingGuard:
             message="All trade parameters verified",
             checks_passed=checks_passed,
         )
+
+    # ----- Individual check methods -----
+
+    @staticmethod
+    def _check_contract_type(
+        contract_type: str, rules: MarketRules,
+        passed: List[str], failed: List[str],
+    ) -> None:
+        if contract_type not in rules.allowed_contract_types:
+            failed.append("contract_type")
+        else:
+            passed.append("contract_type")
+
+    @staticmethod
+    def _check_order_side(
+        side: str, passed: List[str], failed: List[str],
+    ) -> None:
+        valid_sides = {"buy", "sell"}
+        if side.lower() not in valid_sides:
+            failed.append("order_side")
+        else:
+            passed.append("order_side")
+
+    @staticmethod
+    def _check_tick_size(
+        price: Decimal, rules: MarketRules,
+        passed: List[str], failed: List[str],
+    ) -> None:
+        if rules.tick_size > 0 and price % rules.tick_size != 0:
+            failed.append("tick_size")
+        else:
+            passed.append("tick_size")
+
+    @staticmethod
+    def _check_price_bounds(
+        price: Decimal, rules: MarketRules,
+        passed: List[str], failed: List[str],
+    ) -> None:
+        if price < rules.min_price or price > rules.max_price:
+            failed.append("price_bounds")
+        else:
+            passed.append("price_bounds")
+
+    @staticmethod
+    def _check_volume(
+        volume: int, rules: MarketRules,
+        passed: List[str], failed: List[str],
+    ) -> None:
+        if not isinstance(volume, int) or volume < 1:
+            failed.append("volume_min")
+        elif volume > rules.max_contracts:
+            failed.append("volume_max")
+        else:
+            passed.append("volume")
 
     def verify_order_batch(
         self, orders: List[Dict[str, Any]]

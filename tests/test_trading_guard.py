@@ -4,10 +4,7 @@ import pytest
 from decimal import Decimal
 from qwed_finance.guards.trading_guard import (
     TradingGuard,
-    TradingResult,
     MarketRules,
-    ContractType,
-    OrderSide,
 )
 
 
