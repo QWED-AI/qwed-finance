@@ -212,7 +212,9 @@ class TradingGuard:
         price: Decimal, rules: MarketRules,
         passed: List[str], failed: List[str],
     ) -> None:
-        if rules.tick_size > 0 and price % rules.tick_size != 0:
+        if rules.tick_size <= 0:
+            failed.append("tick_size")
+        elif price % rules.tick_size != 0:
             failed.append("tick_size")
         else:
             passed.append("tick_size")
@@ -253,6 +255,18 @@ class TradingGuard:
         failed = 0
 
         for order in orders:
+            if not isinstance(order, dict):
+                result = TradingResult(
+                    verified=False,
+                    market_id="",
+                    risk="TRADE_VERIFICATION_FAILED",
+                    message=f"Invalid order payload type: {type(order).__name__}",
+                    checks_failed=["batch_shape"],
+                )
+                results.append(result)
+                failed += 1
+                continue
+
             missing = [
                 key for key in ("market_id", "contract_type", "price", "volume")
                 if key not in order
