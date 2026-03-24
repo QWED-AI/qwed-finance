@@ -1,9 +1,9 @@
 """
 QWED-Finance: Deterministic verification for banking and financial AI
 
-v2.0.1
+v2.1.0
 
-Ten Guards + Audit Trail + Integrations:
+Eleven Guards + Audit Trail + Integrations:
 - ComplianceGuard: KYC/AML regulatory logic (Z3)
 - CalendarGuard: Day count conventions (SymPy)
 - DerivativesGuard: Options pricing & margin (Black-Scholes)
@@ -14,6 +14,7 @@ Ten Guards + Audit Trail + Integrations:
 - FXGuard: Forward rates, Cross rates, NDF settlement
 - RiskGuard: VaR, Beta, Sharpe, Sortino, Max Drawdown
 - ISOGuard: ISO 20022 JSON schema validation
+- TradingGuard: Prediction market & order book verification (Decimal)
 - VerificationReceipt: Cryptographic audit trail
 - OpenResponsesIntegration: Agentic tool call verification
 - UCPIntegration: Payment token verification
@@ -30,6 +31,7 @@ from .bond_guard import BondGuard, BondResult
 from .fx_guard import FXGuard, FXResult, QuoteConvention
 from .risk_guard import RiskGuard, RiskResult, VaRMethod, ConfidenceLevel
 from .guards.iso_guard import ISOGuard, ISOResult
+from .guards.trading_guard import TradingGuard, TradingResult, MarketRules, ContractType, OrderSide
 from .models.receipt import (
     VerificationReceipt, 
     VerificationEngine, 
@@ -48,7 +50,7 @@ from .integrations import (
 )
 from .schemas import LoanSchema, InvestmentSchema, AmortizationSchema
 
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 __all__ = [
     # Core Verifier
     "FinanceVerifier",
@@ -103,6 +105,13 @@ __all__ = [
     # ISO Guard
     "ISOGuard",
     "ISOResult",
+
+    # Trading Guard
+    "TradingGuard",
+    "TradingResult",
+    "MarketRules",
+    "ContractType",
+    "OrderSide",
     
     # Audit Trail
     "VerificationReceipt",
