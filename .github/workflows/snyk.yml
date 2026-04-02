@@ -17,15 +17,15 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
         with:
           python-version: '3.11'
 
       - name: Install Snyk CLI
-        run: npm install -g snyk@1.1303.1
+        run: npm install -g snyk@1.1303.2
 
       - name: Install Python dependencies
         run: |
@@ -44,7 +44,7 @@ jobs:
         run: snyk test --file=requirements.txt --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-python.sarif
 
       - name: Upload Snyk Python results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
         if: always() && hashFiles('snyk-python.sarif') != ''
         with:
           sarif_file: snyk-python.sarif
@@ -57,10 +57,10 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Install Snyk CLI
-        run: npm install -g snyk@1.1303.1
+        run: npm install -g snyk@1.1303.2
 
       - name: Snyk Code analysis
         env:
@@ -68,7 +68,7 @@ jobs:
         run: snyk code test --org=${{ secrets.SNYK_ORG_ID }} --severity-threshold=high --sarif-file-output=snyk-code.sarif
 
       - name: Upload Snyk Code results
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@cb06a0a8527b2c6970741b3a0baa15231dc74a4c # v4.34.1
         if: always() && hashFiles('snyk-code.sarif') != ''
         with:
           sarif_file: snyk-code.sarif
