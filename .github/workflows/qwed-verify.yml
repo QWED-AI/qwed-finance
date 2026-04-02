@@ -9,8 +9,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       
-      - uses: QWED-AI/qwed-finance@v1.1.4
+      - uses: QWED-AI/qwed-finance@8002d00bbea4fbd05d486e9d5860a0ea2ca81bfd # v1.1.4
         with:
           test-script: tests/verify_agent.py
