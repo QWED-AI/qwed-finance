@@ -1,5 +1,5 @@
 # QWED Finance Guard v2.0 Docker Image
-FROM python:3.11-slim
+FROM python:3.14.4-slim
 
 WORKDIR /app
 
