@@ -160,11 +160,14 @@ class FinanceVerifier:
                 confidence="COMPUTATION_FAILED"
             )
         
-        # Parse LLM output
-        llm_clean = re.sub(r'[%\s]', '', llm_output)
-        llm_rate = float(llm_clean)
-        if llm_rate > 1:  # Assume percentage
-            llm_rate /= 100
+        # Parse LLM output — fail-closed, no guessing
+        llm_clean = llm_output.strip()
+        if "%" in llm_clean:
+            # Explicit percentage: "14.49%" → 0.1449
+            llm_rate = float(re.sub(r'[%\s]', '', llm_clean)) / 100
+        else:
+            # No % symbol: treat as decimal fraction (0.1449 means 14.49%)
+            llm_rate = float(re.sub(r'\s', '', llm_clean))
         
         difference = abs(llm_rate - computed_irr)
         

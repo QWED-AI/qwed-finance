@@ -142,8 +142,9 @@ class BondGuard:
             if abs(dpv) > 1e-10:
                 ytm = ytm - diff / dpv
             
-            # Keep YTM reasonable
-            ytm = max(0.0001, min(ytm, 1.0))
+            # Keep YTM in a reasonable range for convergence
+            # Upper bound 10.0 (1000%) supports distressed debt scenarios
+            ytm = max(0.0001, min(ytm, 10.0))
         
         return ytm
     
@@ -358,12 +359,21 @@ class BondGuard:
         )
     
     def _parse_rate(self, rate_str: str) -> float:
-        """Parse rate string to float (handles % and decimal)"""
+        """Parse rate string to float — fail-closed, no silent guessing.
+
+        Rules:
+          - "5.25%" or "5.25 %" → 0.0525  (explicit percentage)
+          - "0.0525"            → 0.0525  (explicit decimal fraction)
+          - "5.25" (no %)       → 5.25    (no guessing; caller must include '%' for percent format)
+
+        QWED philosophy: if format is ambiguous, do NOT guess.
+        Callers must use explicit '%' suffix for percentage values.
+        """
         rate_str = rate_str.strip()
         if "%" in rate_str:
             return float(rate_str.replace("%", "").strip()) / 100
-        val = float(rate_str)
-        return val if val < 1 else val / 100
+        # No % symbol: treat as decimal fraction (0.05 means 5%)
+        return float(rate_str)
     
     def _parse_money(self, value: str) -> Decimal:
         """Parse money string to Decimal"""
