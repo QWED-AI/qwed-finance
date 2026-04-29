@@ -214,14 +214,34 @@ class OpenResponsesIntegration:
         
         # If tool has verification function, use it
         if tool.verification_fn:
-            return tool.verification_fn(args)
+            try:
+                return tool.verification_fn(args)
+            except Exception as e:
+                return VerifiedToolCall(
+                    status=ToolCallStatus.ERROR,
+                    tool_name=tool_name,
+                    original_args=args,
+                    error=f"Verification function failed: {e}",
+                    retry_message="Please retry with valid arguments or investigate tool verifier errors.",
+                )
         
         # Fail-closed: reject tools without a verification function.
         # QWED philosophy: "Verification decides IF." — no verification = no approval.
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name=f"OpenResponses.{tool_name}",
+            engine=VerificationEngine.DECIMAL,
+            llm_output=str(args),
+            verified=False,
+            computed_value="rejected_missing_verification_fn",
+            violations=[f"No verification function registered for tool '{tool_name}'"],
+        )
+        self.audit_log.log(receipt)
+
         return VerifiedToolCall(
             status=ToolCallStatus.REJECTED,
             tool_name=tool_name,
             original_args=args,
+            receipt=receipt,
             error=(
                 f"No verification function registered for tool '{tool_name}'. "
                 "All tools must have a verification_fn to be approved."
@@ -263,7 +283,7 @@ class OpenResponsesIntegration:
             tool_name="calculate_npv",
             original_args=args,
             verified_args=args,
-            result={"npv": result, "computed": True, "verified_against_llm": False},
+            result={"npv": result, "verified": False, "computed": True, "verified_against_llm": False},
             receipt=receipt
         )
     
@@ -295,7 +315,7 @@ class OpenResponsesIntegration:
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim
             computed_value=result,
-            formula="PMT = P × [r(1+r)^n] / [(1+r)^n - 1]"
+            formula="PMT = P * [r(1+r)^n] / [(1+r)^n - 1]"
         )
         self.audit_log.log(receipt)
         
@@ -304,7 +324,7 @@ class OpenResponsesIntegration:
             tool_name="calculate_loan_payment",
             original_args=args,
             verified_args=args,
-            result={"monthly_payment": result, "computed": True, "verified_against_llm": False},
+            result={"monthly_payment": result, "verified": False, "computed": True, "verified_against_llm": False},
             receipt=receipt
         )
     
@@ -338,6 +358,7 @@ class OpenResponsesIntegration:
                 "needs_flagging": needs_flagging,
                 "reason": "Amount exceeds threshold" if amount >= threshold else
                          "High-risk jurisdiction" if is_high_risk else "Clear",
+                "verified": False,
                 "computed": True,
                 "verified_against_llm": False
             },
@@ -355,6 +376,16 @@ class OpenResponsesIntegration:
         r = args.get("risk_free_rate", 0.05)
         sigma = args.get("volatility", 0.2)
         opt_type = OptionType.CALL if args.get("option_type") == "call" else OptionType.PUT
+        
+        # Fail-closed: reject non-positive inputs that would cause math errors
+        if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+            return VerifiedToolCall(
+                status=ToolCallStatus.REJECTED,
+                tool_name="price_option",
+                original_args=args,
+                error="spot_price, strike_price, time_to_expiry, and volatility must be > 0",
+                retry_message="Provide strictly positive inputs for Black-Scholes pricing.",
+            )
         
         # Black-Scholes
         d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
@@ -386,12 +417,64 @@ class OpenResponsesIntegration:
             result={
                 "price": f"${price:.2f}",
                 "delta": round(norm_cdf(d1) if opt_type == OptionType.CALL else norm_cdf(d1) - 1, 4),
+                "verified": False,
                 "computed": True,
                 "verified_against_llm": False
             },
             receipt=receipt
         )
     
+    @staticmethod
+    def _extract_receipt_meta(
+        receipt: Optional[VerificationReceipt],
+    ) -> Dict[str, Any]:
+        """Extract common metadata from a receipt (or safe defaults)."""
+        if receipt is None:
+            return {"engine": "unknown", "receipt_id": None, "timestamp": None, "input_hash": None}
+        return {
+            "engine": receipt.engine_used.value,
+            "receipt_id": receipt.receipt_id,
+            "input_hash": receipt.input_hash,
+            "timestamp": receipt.timestamp,
+        }
+
+    def _format_success(
+        self, call_id: str, result: VerifiedToolCall, verification: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Format a non-error tool result item."""
+        return {
+            "type": "tool_result",
+            "id": call_id,
+            "tool_use_id": result.tool_name,
+            "content": {
+                "mime_type": "application/json",
+                "text": json.dumps({
+                    "result": result.result,
+                    "verification": verification,
+                }),
+            },
+            "is_error": False,
+        }
+
+    def _format_error(
+        self, call_id: str, result: VerifiedToolCall,
+    ) -> Dict[str, Any]:
+        """Format an error tool result item."""
+        return {
+            "type": "tool_result",
+            "id": call_id,
+            "tool_use_id": result.tool_name,
+            "content": {
+                "mime_type": "application/json",
+                "text": json.dumps({
+                    "error": result.error,
+                    "retry_message": result.retry_message,
+                    "violations": result.receipt.violations if result.receipt else [],
+                }),
+            },
+            "is_error": True,
+        }
+
     def format_for_responses_api(
         self, 
         result: VerifiedToolCall,
@@ -405,66 +488,26 @@ class OpenResponsesIntegration:
         import uuid
         
         call_id = tool_call_id or f"call_{uuid.uuid4().hex[:12]}"
+        meta = self._extract_receipt_meta(result.receipt)
         
         if result.status == ToolCallStatus.APPROVED:
-            return {
-                "type": "tool_result",
-                "id": call_id,
-                "tool_use_id": result.tool_name,
-                "content": {
-                    "mime_type": "application/json",
-                    "text": json.dumps({
-                        "result": result.result,
-                        "verification": {
-                            "status": "verified",
-                            "verified": True,
-                            "engine": result.receipt.engine_used.value if result.receipt else "unknown",
-                            "receipt_id": result.receipt.receipt_id if result.receipt else None,
-                            "input_hash": result.receipt.input_hash if result.receipt else None,
-                            "timestamp": result.receipt.timestamp if result.receipt else None
-                        }
-                    })
-                },
-                "is_error": False
-            }
-        elif result.status == ToolCallStatus.COMPUTED:
+            return self._format_success(call_id, result, {
+                "status": "verified",
+                "verified": True,
+                **meta,
+            })
+
+        if result.status == ToolCallStatus.COMPUTED:
             # COMPUTED: result is available but was NOT verified against an LLM claim.
             # Downstream consumers must NOT treat this as "verified".
-            return {
-                "type": "tool_result",
-                "id": call_id,
-                "tool_use_id": result.tool_name,
-                "content": {
-                    "mime_type": "application/json",
-                    "text": json.dumps({
-                        "result": result.result,
-                        "verification": {
-                            "status": "computed_only",
-                            "verified": False,
-                            "note": "Result was computed deterministically but NOT verified against an LLM claim.",
-                            "engine": result.receipt.engine_used.value if result.receipt else "unknown",
-                            "receipt_id": result.receipt.receipt_id if result.receipt else None,
-                            "timestamp": result.receipt.timestamp if result.receipt else None
-                        }
-                    })
-                },
-                "is_error": False
-            }
-        else:
-            return {
-                "type": "tool_result",
-                "id": call_id,
-                "tool_use_id": result.tool_name,
-                "content": {
-                    "mime_type": "application/json",
-                    "text": json.dumps({
-                        "error": result.error,
-                        "retry_message": result.retry_message,
-                        "violations": result.receipt.violations if result.receipt else []
-                    })
-                },
-                "is_error": True
-            }
+            return self._format_success(call_id, result, {
+                "status": "computed_only",
+                "verified": False,
+                "note": "Result was computed deterministically but NOT verified against an LLM claim.",
+                **meta,
+            })
+
+        return self._format_error(call_id, result)
     
     def format_as_item(
         self,

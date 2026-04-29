@@ -7,7 +7,9 @@ Covers:
 - S-06: AML high-risk country list must match ComplianceGuard
 """
 
-import pytest
+
+import re
+
 from qwed_finance.integrations.open_responses import (
     OpenResponsesIntegration,
     ToolCallStatus,
@@ -48,8 +50,8 @@ class TestFailClosedDefault:
         assert "verification function" in result.error.lower()
         assert result.verified_args is None
 
-    def test_tool_without_verification_fn_has_no_receipt(self):
-        """Rejected tools should not produce audit receipts."""
+    def test_tool_without_verification_fn_has_audit_receipt(self):
+        """Rejected tools should produce audit receipts for compliance."""
         self.integration.register_tool(
             name="dangerous_tool",
             description="No verification",
@@ -61,7 +63,8 @@ class TestFailClosedDefault:
         )
 
         assert result.status == ToolCallStatus.REJECTED
-        assert result.receipt is None
+        assert result.receipt is not None
+        assert result.receipt.verified is False
 
     def test_tool_with_verification_fn_is_not_rejected(self):
         """A tool WITH verification_fn should not be REJECTED."""
@@ -178,8 +181,8 @@ class TestComputedStatus:
 
         for tool_name, args in builtin_tools:
             result = self.integration.handle_tool_call(tool_name, args)
-            assert result.status != ToolCallStatus.APPROVED, (
-                f"{tool_name} returned APPROVED but should return COMPUTED"
+            assert result.status == ToolCallStatus.COMPUTED, (
+                f"{tool_name} returned {result.status} but should return COMPUTED"
             )
 
 
@@ -283,7 +286,74 @@ class TestNPVPrecision:
         )
 
         npv_str = result.result["npv"]
-        # Should be clean like "$1.23", not "$1.2300000000000001"
-        assert "000000" not in npv_str, (
-            f"Float precision leak detected in NPV output: {npv_str}"
+        # Should be currency-formatted with exactly 2 decimal places
+        assert re.fullmatch(r"\$-?\d+\.\d{2}", npv_str), (
+            f"Unexpected NPV currency format (possible precision leak): {npv_str}"
         )
+
+
+class TestVerificationFnErrorBoundary:
+    """Verify that a crashing verification_fn returns ERROR, not exception."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def test_crashing_verification_fn_returns_error(self):
+        """A verification_fn that raises should return ERROR status."""
+        def crashing_verify(args):
+            raise ValueError("Something went wrong")
+
+        self.integration.register_tool(
+            name="crashing_tool",
+            description="Will crash",
+            parameters={},
+            verification_fn=crashing_verify,
+        )
+
+        result = self.integration.handle_tool_call("crashing_tool", {"x": 1})
+        assert result.status == ToolCallStatus.ERROR
+        assert "Verification function failed" in result.error
+
+
+class TestBlackScholesInputGuard:
+    """Verify Black-Scholes rejects zero/negative inputs."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def test_zero_volatility_rejected(self):
+        """Volatility=0 would cause ZeroDivisionError — must be REJECTED."""
+        result = self.integration.handle_tool_call(
+            "price_option",
+            {
+                "spot_price": 100, "strike_price": 100,
+                "time_to_expiry": 1, "risk_free_rate": 0.05,
+                "volatility": 0, "option_type": "call",
+            },
+        )
+        assert result.status == ToolCallStatus.REJECTED
+        assert "must be > 0" in result.error
+
+    def test_zero_time_rejected(self):
+        """time_to_expiry=0 would cause ZeroDivisionError — must be REJECTED."""
+        result = self.integration.handle_tool_call(
+            "price_option",
+            {
+                "spot_price": 100, "strike_price": 100,
+                "time_to_expiry": 0, "risk_free_rate": 0.05,
+                "volatility": 0.2, "option_type": "call",
+            },
+        )
+        assert result.status == ToolCallStatus.REJECTED
+
+    def test_negative_spot_rejected(self):
+        """Negative spot price is nonsensical — must be REJECTED."""
+        result = self.integration.handle_tool_call(
+            "price_option",
+            {
+                "spot_price": -100, "strike_price": 100,
+                "time_to_expiry": 1, "risk_free_rate": 0.05,
+                "volatility": 0.2, "option_type": "call",
+            },
+        )
+        assert result.status == ToolCallStatus.REJECTED
