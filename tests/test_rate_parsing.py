@@ -7,7 +7,6 @@ Covers:
 - S-05: Cross-guard rate parsing consistency
 """
 
-import re
 import pytest
 
 from qwed_finance import BondGuard, FinanceVerifier

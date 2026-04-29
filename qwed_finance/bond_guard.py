@@ -142,8 +142,9 @@ class BondGuard:
             if abs(dpv) > 1e-10:
                 ytm = ytm - diff / dpv
             
-            # Keep YTM reasonable
-            ytm = max(0.0001, min(ytm, 1.0))
+            # Keep YTM in a reasonable range for convergence
+            # Upper bound 10.0 (1000%) supports distressed debt scenarios
+            ytm = max(0.0001, min(ytm, 10.0))
         
         return ytm
     
