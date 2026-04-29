@@ -8,6 +8,7 @@ Covers:
 """
 
 import re
+import pytest
 
 from qwed_finance import BondGuard, FinanceVerifier
 
@@ -65,11 +66,8 @@ class TestBondGuardParseRate:
 
     def test_invalid_input_raises(self):
         """Non-numeric input must raise ValueError (fail-closed)."""
-        try:
+        with pytest.raises(ValueError):
             self.guard._parse_rate("abc")
-            assert False, "Should have raised ValueError"
-        except ValueError:
-            pass
 
 
 class TestFinanceVerifierIRRParsing:
@@ -79,34 +77,43 @@ class TestFinanceVerifierIRRParsing:
         self.verifier = FinanceVerifier()
 
     def test_irr_with_explicit_percentage(self):
-        """'14.49%' must be correctly parsed and verified."""
+        """Explicit '%' input must be parsed and compared correctly."""
         result = self.verifier.verify_irr(
             cashflows=[-1000, 300, 400, 400, 300],
-            llm_output="14.49%"
+            llm_output="14.90%"
         )
-        assert result.computed_value is not None
+        assert result.verified is True
 
     def test_irr_with_decimal_fraction(self):
-        """'0.1449' must be treated as decimal 14.49%, not guessed."""
+        """Bare decimal must be treated as decimal fraction, not percentage."""
         result = self.verifier.verify_irr(
             cashflows=[-1000, 300, 400, 400, 300],
-            llm_output="0.1449"
+            llm_output="0.1490"
         )
-        # 0.1449 as decimal = 14.49% — should match computed IRR
-        assert result.computed_value is not None
+        # 0.1490 as decimal = 14.90% — should match computed IRR
+        assert result.verified is True
 
     def test_irr_value_above_one_not_divided(self):
         """'1.5' without % must NOT be divided by 100.
 
         Old behavior: 1.5 > 1 → divide → 0.015 (wrong!)
         New behavior: 1.5 stays 1.5 (150% IRR)
+
+        Discriminating check: use cashflows where IRR ≈ 1.5% (0.015).
+        Under old heuristic, '1.5' → 0.015 would PASS (wrong!).
+        Under new behavior, '1.5' → 1.5 would FAIL (correct!).
         """
+        # These cashflows have IRR ≈ 1.5% (0.015)
         result = self.verifier.verify_irr(
-            cashflows=[-1000, 300, 400, 400, 300],
+            cashflows=[-1000, 340, 340, 340],
             llm_output="1.5"
         )
-        # LLM said 150% but actual IRR is ~14.5% — should NOT verify
-        assert result.verified is False
+        # New behavior: 1.5 is treated as 150%, not 1.5%
+        # So verified must be False (150% != ~1.5%)
+        # Under old heuristic, this would have been True (1.5 / 100 = 0.015 ≈ 1.5%)
+        assert result.verified is False, (
+            "Old heuristic is still active! '1.5' was divided by 100."
+        )
 
 
 class TestCrossGuardConsistency:
@@ -114,6 +121,7 @@ class TestCrossGuardConsistency:
 
     def setup_method(self):
         self.bond = BondGuard()
+        self.verifier = FinanceVerifier()
 
     def test_percentage_format_consistent(self):
         """'5.25%' must produce 0.0525 in BondGuard."""
@@ -130,13 +138,22 @@ class TestCrossGuardConsistency:
     def test_irr_and_bond_agree_on_percentage(self):
         """Both guards must interpret '5.25%' the same way."""
         bond_rate = self.bond._parse_rate("5.25%")
-        # FinanceVerifier uses same logic now: "5.25%" → strip % → 5.25 → /100
-        irr_rate = float(re.sub(r'[%\s]', '', "5.25%")) / 100
-        assert bond_rate == irr_rate
+        # Both should interpret 5.25% as 0.0525
+        assert bond_rate == 0.0525
+        # FinanceVerifier exercises the same parsing on "%" inputs
+        result = self.verifier.verify_irr(
+            cashflows=[-1000, 350, 350, 350],
+            llm_output="5.25%"
+        )
+        assert result.computed_value is not None  # parsing succeeded
 
     def test_irr_and_bond_agree_on_decimal(self):
-        """Both guards must interpret '0.0525' the same way."""
-        bond_rate = self.bond._parse_rate("0.0525")
-        # FinanceVerifier: no %, treat as decimal
-        irr_rate = float("0.0525")
-        assert bond_rate == irr_rate
+        """Both guards must interpret '0.1490' the same way."""
+        bond_rate = self.bond._parse_rate("0.1490")
+        # FinanceVerifier should also treat 0.1490 as decimal
+        result = self.verifier.verify_irr(
+            cashflows=[-1000, 300, 400, 400, 300],
+            llm_output="0.1490"
+        )
+        assert bond_rate == 0.1490
+        assert result.verified is True  # parses same as decimal
