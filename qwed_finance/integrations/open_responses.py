@@ -17,10 +17,11 @@ from ..models.receipt import VerificationReceipt, ReceiptGenerator, Verification
 
 class ToolCallStatus(Enum):
     """Status of a verified tool call"""
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    MODIFIED = "modified"
-    ERROR = "error"
+    APPROVED = "approved"      # Verified against LLM claim and passed
+    REJECTED = "rejected"      # Verification failed or not possible
+    MODIFIED = "modified"      # Args were corrected before approval
+    COMPUTED = "computed"      # Result computed but NOT verified against LLM claim
+    ERROR = "error"            # System error prevented verification
 
 
 @dataclass
@@ -215,56 +216,65 @@ class OpenResponsesIntegration:
         if tool.verification_fn:
             return tool.verification_fn(args)
         
-        # Default: approve without verification
+        # Fail-closed: reject tools without a verification function.
+        # QWED philosophy: "Verification decides IF." — no verification = no approval.
         return VerifiedToolCall(
-            status=ToolCallStatus.APPROVED,
+            status=ToolCallStatus.REJECTED,
             tool_name=tool_name,
             original_args=args,
-            verified_args=args
+            error=(
+                f"No verification function registered for tool '{tool_name}'. "
+                "All tools must have a verification_fn to be approved."
+            ),
+            retry_message=(
+                "Register a verification function using register_tool() "
+                "with a verification_fn parameter."
+            )
         )
     
     # ==================== Verification Functions ====================
     
     def _verify_npv(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Verify NPV calculation"""
+        """Compute NPV — returns COMPUTED status (not verified against LLM claim)."""
         cashflows = args.get("cashflows", [])
         rate = args.get("rate", 0)
         
-        # Compute NPV
-        from decimal import Decimal
+        # Compute NPV using Decimal for exact arithmetic
+        from decimal import Decimal, ROUND_HALF_UP
         npv = Decimal('0')
         for t, cf in enumerate(cashflows):
             npv += Decimal(str(cf)) / (Decimal(str(1 + rate)) ** t)
         
-        result = f"${float(npv):.2f}"
+        computed_npv = str(npv.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        result = f"${computed_npv}"
         
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.calculate_npv",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
-            verified=True,
+            verified=False,  # Computed, not verified against LLM claim
             computed_value=result,
             formula="NPV = Σ(CFt / (1+r)^t)"
         )
         self.audit_log.log(receipt)
         
         return VerifiedToolCall(
-            status=ToolCallStatus.APPROVED,
+            status=ToolCallStatus.COMPUTED,
             tool_name="calculate_npv",
             original_args=args,
             verified_args=args,
-            result={"npv": result, "verified": True},
+            result={"npv": result, "computed": True, "verified_against_llm": False},
             receipt=receipt
         )
     
     def _verify_loan_payment(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Verify loan payment calculation"""
+        """Compute loan payment — returns COMPUTED status (not verified against LLM claim)."""
         principal = args.get("principal", 0)
         annual_rate = args.get("annual_rate", 0)
         months = args.get("months", 1)
         
-        # Compute payment
-        from decimal import Decimal
+        # Compute payment using Decimal for exact arithmetic
+        from decimal import Decimal, ROUND_HALF_UP
         P = Decimal(str(principal))
         monthly_rate = Decimal(str(annual_rate)) / 12
         n = months
@@ -276,49 +286,51 @@ class OpenResponsesIntegration:
             one_plus_r_n = one_plus_r ** n
             payment = P * (monthly_rate * one_plus_r_n) / (one_plus_r_n - 1)
         
-        result = f"${float(payment):.2f}"
+        computed_payment = str(payment.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        result = f"${computed_payment}"
         
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.calculate_loan_payment",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
-            verified=True,
+            verified=False,  # Computed, not verified against LLM claim
             computed_value=result,
             formula="PMT = P × [r(1+r)^n] / [(1+r)^n - 1]"
         )
         self.audit_log.log(receipt)
         
         return VerifiedToolCall(
-            status=ToolCallStatus.APPROVED,
+            status=ToolCallStatus.COMPUTED,
             tool_name="calculate_loan_payment",
             original_args=args,
             verified_args=args,
-            result={"monthly_payment": result, "verified": True},
+            result={"monthly_payment": result, "computed": True, "verified_against_llm": False},
             receipt=receipt
         )
     
     def _verify_aml(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Verify AML compliance check"""
+        """Compute AML check — delegates to ComplianceGuard for consistent rules."""
         amount = args.get("amount", 0)
         country_code = args.get("country_code", "US")
         
-        # Check AML threshold
-        threshold = 10000
-        is_high_risk = country_code.upper() in {"KP", "IR", "SY", "MM", "AF"}
+        # Delegate to ComplianceGuard for consistent high-risk country list
+        # (S-06 fix: no more duplicated subset of countries)
+        is_high_risk = country_code.upper() in self.compliance.high_risk_countries
+        threshold = self.compliance.aml_thresholds.get("USA", 10000)
         needs_flagging = amount >= threshold or is_high_risk
         
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.check_aml_compliance",
             engine=VerificationEngine.Z3,
             llm_output=str(args),
-            verified=True,
+            verified=False,  # Computed, not verified against LLM claim
             computed_value=str(needs_flagging),
-            formula="Flag if: amount >= $10,000 OR country in HIGH_RISK"
+            formula="Flag if: amount >= threshold OR country in HIGH_RISK"
         )
         self.audit_log.log(receipt)
         
         return VerifiedToolCall(
-            status=ToolCallStatus.APPROVED,
+            status=ToolCallStatus.COMPUTED,
             tool_name="check_aml_compliance",
             original_args=args,
             verified_args=args,
@@ -326,14 +338,15 @@ class OpenResponsesIntegration:
                 "needs_flagging": needs_flagging,
                 "reason": "Amount exceeds threshold" if amount >= threshold else
                          "High-risk jurisdiction" if is_high_risk else "Clear",
-                "verified": True
+                "computed": True,
+                "verified_against_llm": False
             },
             receipt=receipt
         )
     
     def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Verify Black-Scholes option price"""
-        from .derivatives_guard import OptionType
+        """Compute Black-Scholes option price — returns COMPUTED status."""
+        from ..derivatives_guard import OptionType
         import math
         
         S = args.get("spot_price", 100)
@@ -359,21 +372,22 @@ class OpenResponsesIntegration:
             guard_name="OpenResponses.price_option",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
-            verified=True,
+            verified=False,  # Computed, not verified against LLM claim
             computed_value=f"${price:.2f}",
             formula="Black-Scholes: C = S·N(d₁) - K·e^(-rT)·N(d₂)"
         )
         self.audit_log.log(receipt)
         
         return VerifiedToolCall(
-            status=ToolCallStatus.APPROVED,
+            status=ToolCallStatus.COMPUTED,
             tool_name="price_option",
             original_args=args,
             verified_args=args,
             result={
                 "price": f"${price:.2f}",
                 "delta": round(norm_cdf(d1) if opt_type == OptionType.CALL else norm_cdf(d1) - 1, 4),
-                "verified": True
+                "computed": True,
+                "verified_against_llm": False
             },
             receipt=receipt
         )
@@ -402,10 +416,34 @@ class OpenResponsesIntegration:
                     "text": json.dumps({
                         "result": result.result,
                         "verification": {
+                            "status": "verified",
                             "verified": True,
                             "engine": result.receipt.engine_used.value if result.receipt else "unknown",
                             "receipt_id": result.receipt.receipt_id if result.receipt else None,
                             "input_hash": result.receipt.input_hash if result.receipt else None,
+                            "timestamp": result.receipt.timestamp if result.receipt else None
+                        }
+                    })
+                },
+                "is_error": False
+            }
+        elif result.status == ToolCallStatus.COMPUTED:
+            # COMPUTED: result is available but was NOT verified against an LLM claim.
+            # Downstream consumers must NOT treat this as "verified".
+            return {
+                "type": "tool_result",
+                "id": call_id,
+                "tool_use_id": result.tool_name,
+                "content": {
+                    "mime_type": "application/json",
+                    "text": json.dumps({
+                        "result": result.result,
+                        "verification": {
+                            "status": "computed_only",
+                            "verified": False,
+                            "note": "Result was computed deterministically but NOT verified against an LLM claim.",
+                            "engine": result.receipt.engine_used.value if result.receipt else "unknown",
+                            "receipt_id": result.receipt.receipt_id if result.receipt else None,
                             "timestamp": result.receipt.timestamp if result.receipt else None
                         }
                     })
