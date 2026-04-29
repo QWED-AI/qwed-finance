@@ -358,12 +358,23 @@ class BondGuard:
         )
     
     def _parse_rate(self, rate_str: str) -> float:
-        """Parse rate string to float (handles % and decimal)"""
+        """Parse rate string to float — fail-closed, no silent guessing.
+
+        Rules:
+          - "5.25%" or "5.25 %" → 0.0525  (explicit percentage)
+          - "0.0525"            → 0.0525  (explicit decimal)
+          - "5.25" (no %)       → 0.0525 ONLY if self.assume_decimal is False
+                                  (default: treat bare numbers as decimal fractions)
+
+        QWED philosophy: if format is ambiguous, do NOT guess.
+        The caller's docstring says "e.g., 0.05 for 5%", so bare numbers
+        are expected to already be in decimal form.
+        """
         rate_str = rate_str.strip()
         if "%" in rate_str:
             return float(rate_str.replace("%", "").strip()) / 100
-        val = float(rate_str)
-        return val if val < 1 else val / 100
+        # No % symbol: treat as decimal fraction (0.05 means 5%)
+        return float(rate_str)
     
     def _parse_money(self, value: str) -> Decimal:
         """Parse money string to Decimal"""
