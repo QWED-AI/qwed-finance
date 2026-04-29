@@ -363,13 +363,11 @@ class BondGuard:
 
         Rules:
           - "5.25%" or "5.25 %" → 0.0525  (explicit percentage)
-          - "0.0525"            → 0.0525  (explicit decimal)
-          - "5.25" (no %)       → 0.0525 ONLY if self.assume_decimal is False
-                                  (default: treat bare numbers as decimal fractions)
+          - "0.0525"            → 0.0525  (explicit decimal fraction)
+          - "5.25" (no %)       → 5.25    (no guessing; caller must include '%' for percent format)
 
         QWED philosophy: if format is ambiguous, do NOT guess.
-        The caller's docstring says "e.g., 0.05 for 5%", so bare numbers
-        are expected to already be in decimal form.
+        Callers must use explicit '%' suffix for percentage values.
         """
         rate_str = rate_str.strip()
         if "%" in rate_str:
