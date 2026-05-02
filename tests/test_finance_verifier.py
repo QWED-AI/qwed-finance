@@ -109,6 +109,19 @@ class TestCompoundInterest:
         )
         assert result.verified == True
 
+    def test_unknown_compounding_raises(self):
+        """N-04 regression: unknown frequency must raise ValueError, not silently default to annual."""
+        with pytest.raises(ValueError) as ctx:
+            self.verifier.verify_compound_interest(
+                principal=10000,
+                rate=0.05,
+                periods=10,
+                llm_output="$16,288.95",
+                compounding="weekly",
+            )
+        assert "weekly" in str(ctx.value)
+        assert "annual" in str(ctx.value)
+
 
 class TestMoneyArithmetic:
     """Test exact money arithmetic"""

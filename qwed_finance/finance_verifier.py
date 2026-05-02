@@ -313,7 +313,7 @@ class FinanceVerifier:
             rate: Annual interest rate
             periods: Number of years
             llm_output: LLM's answer
-            compounding: "annual", "quarterly", "monthly", "daily"
+            compounding: "annual", "semi-annual", "quarterly", "monthly", "daily"
             
         Returns:
             VerificationResult

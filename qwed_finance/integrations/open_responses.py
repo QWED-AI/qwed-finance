@@ -11,7 +11,7 @@ import json
 from ..finance_verifier import FinanceVerifier
 from ..compliance_guard import ComplianceGuard
 from ..calendar_guard import CalendarGuard
-from ..derivatives_guard import DerivativesGuard
+from ..derivatives_guard import DerivativesGuard, OptionType
 from ..models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
 
 
@@ -369,11 +369,8 @@ class OpenResponsesIntegration:
         """Compute Black-Scholes option price — delegates to DerivativesGuard.
         
         Single source of truth: uses the same mpmath-based implementation
-        as DerivativesGuard to ensure deterministic consistency across paths.
+        as self.derivatives to ensure deterministic consistency across paths.
         """
-        from ..derivatives_guard import DerivativesGuard, OptionType
-        from decimal import Decimal
-        
         S = args.get("spot_price", 100)
         K = args.get("strike_price", 100)
         T = args.get("time_to_expiry", 1)
@@ -391,9 +388,8 @@ class OpenResponsesIntegration:
                 retry_message="Provide strictly positive inputs for Black-Scholes pricing.",
             )
         
-        # Delegate to DerivativesGuard — single source of truth (mpmath)
-        guard = DerivativesGuard()
-        bs_result = guard.verify_black_scholes(
+        # Delegate to self.derivatives — single source of truth (mpmath)
+        bs_result = self.derivatives.verify_black_scholes(
             spot_price=S,
             strike_price=K,
             time_to_expiry=T,
@@ -420,7 +416,7 @@ class OpenResponsesIntegration:
             verified_args=args,
             result={
                 "price": bs_result.computed_price,
-                "delta": bs_result.greeks["delta"] if bs_result.greeks else None,
+                "delta": bs_result.greeks.get("delta") if bs_result.greeks else None,
                 "verified": False,
                 "computed": True,
                 "verified_against_llm": False
