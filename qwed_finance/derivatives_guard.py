@@ -154,7 +154,7 @@ class DerivativesGuard:
     
     def _calculate_greeks(
         self,
-        S, K, T, r, sigma,
+        spot, strike, time_exp, rate, sigma,
         option_type: OptionType,
         d1, d2
     ) -> dict:
@@ -163,7 +163,7 @@ class DerivativesGuard:
         
         All computed using mpmath for precision, then quantized to Decimal for output.
         """
-        sqrt_T = mpmath.sqrt(T)
+        sqrt_time = mpmath.sqrt(time_exp)
         
         # Delta: ∂V/∂S
         if option_type == OptionType.CALL:
@@ -172,25 +172,25 @@ class DerivativesGuard:
             delta = self._norm_cdf(d1) - 1
         
         # Gamma: ∂²V/∂S²
-        gamma = self._norm_pdf(d1) / (S * sigma * sqrt_T)
+        gamma = self._norm_pdf(d1) / (spot * sigma * sqrt_time)
         
         # Theta: ∂V/∂T (per day, so divide by 365)
-        theta_base = -(S * self._norm_pdf(d1) * sigma) / (2 * sqrt_T)
+        theta_base = -(spot * self._norm_pdf(d1) * sigma) / (2 * sqrt_time)
         if option_type == OptionType.CALL:
-            theta = theta_base - r * K * mpmath.exp(-r * T) * self._norm_cdf(d2)
+            theta = theta_base - rate * strike * mpmath.exp(-rate * time_exp) * self._norm_cdf(d2)
         else:
-            theta = theta_base + r * K * mpmath.exp(-r * T) * self._norm_cdf(-d2)
+            theta = theta_base + rate * strike * mpmath.exp(-rate * time_exp) * self._norm_cdf(-d2)
         theta_daily = theta / 365
         
         # Vega: ∂V/∂σ (per 1% move, so divide by 100)
-        vega = S * sqrt_T * self._norm_pdf(d1)
+        vega = spot * sqrt_time * self._norm_pdf(d1)
         vega_pct = vega / 100
         
         # Rho: ∂V/∂r (per 1% move, so divide by 100)
         if option_type == OptionType.CALL:
-            rho = K * T * mpmath.exp(-r * T) * self._norm_cdf(d2)
+            rho = strike * time_exp * mpmath.exp(-rate * time_exp) * self._norm_cdf(d2)
         else:
-            rho = -K * T * mpmath.exp(-r * T) * self._norm_cdf(-d2)
+            rho = -strike * time_exp * mpmath.exp(-rate * time_exp) * self._norm_cdf(-d2)
         rho_pct = rho / 100
         
         # Quantize output via Decimal for exact representation

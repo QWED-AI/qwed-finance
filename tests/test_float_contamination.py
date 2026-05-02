@@ -8,7 +8,6 @@ Covers:
 - S-04: No float leaks in monetary output strings
 """
 
-import pytest
 from decimal import Decimal
 
 from qwed_finance import BondGuard, DerivativesGuard, OptionType
@@ -116,7 +115,7 @@ class TestDerivativesGuardMpmath:
             # Must be a string (Decimal-quantized), not a float
             assert isinstance(value, str), f"Greek {greek_name} is {type(value)}, expected str"
             # Must not have float artifacts
-            assert "e-" not in value.lower() or "e-0" not in value.lower(), \
+            assert "e-" not in value.lower(), \
                 f"Greek {greek_name} has scientific notation: {value}"
 
     def test_put_price_positive(self):
@@ -253,13 +252,13 @@ class TestRiskGuardDecimal:
 class TestNoFloatInOutput:
     """Ensure no float artifacts leak into any guard output strings."""
 
-    FLOAT_ARTIFACTS = [
+    FLOAT_ARTIFACTS = (
         "0.30000000000000004",   # 0.1 + 0.2
         "3.5999999999999943",    # sum of 360 × 0.01
         "e-",                    # scientific notation from float
         "nan",
         "inf",
-    ]
+    )
 
     def _check_no_float_leak(self, value: str):
         """Assert a string has no IEEE-754 artifacts."""

@@ -83,8 +83,7 @@ class BondGuard:
             BondResult with verification status
         """
         # Parse LLM's YTM
-        llm_rate = self._parse_rate(llm_ytm)
-        llm_rate_d = Decimal(str(llm_rate))
+        llm_rate_d = self._parse_rate(llm_ytm)
         
         # Convert inputs to Decimal at the boundary
         fv = Decimal(str(face_value))
@@ -363,9 +362,9 @@ class BondGuard:
         
         return BondResult(
             verified=verified,
-            llm_value=f"${llm_val:.2f}",
-            computed_value=f"${computed:.2f}",
-            difference=f"${diff:.2f}" if not verified else None,
+            llm_value=f"${llm_val.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            computed_value=f"${computed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            difference=f"${diff.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Accrued = (Days/Period) × Coupon"
         )
     
@@ -397,28 +396,28 @@ class BondGuard:
         
         return BondResult(
             verified=verified,
-            llm_value=f"${llm_val:.2f}",
-            computed_value=f"${computed:.2f}",
-            difference=f"${diff:.2f}" if not verified else None,
+            llm_value=f"${llm_val.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            computed_value=f"${computed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            difference=f"${diff.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Dirty Price = Clean Price + Accrued Interest"
         )
     
-    def _parse_rate(self, rate_str: str) -> float:
-        """Parse rate string to float — fail-closed, no silent guessing.
+    def _parse_rate(self, rate_str: str) -> Decimal:
+        """Parse rate string to Decimal — fail-closed, no silent guessing.
 
         Rules:
-          - "5.25%" or "5.25 %" → 0.0525  (explicit percentage)
-          - "0.0525"            → 0.0525  (explicit decimal fraction)
-          - "5.25" (no %)       → 5.25    (no guessing; caller must include '%' for percent format)
+          - "5.25%" or "5.25 %" → Decimal("0.0525")  (explicit percentage)
+          - "0.0525"            → Decimal("0.0525")  (explicit decimal fraction)
+          - "5.25" (no %)       → Decimal("5.25")    (no guessing; caller must include '%' for percent format)
 
         QWED philosophy: if format is ambiguous, do NOT guess.
         Callers must use explicit '%' suffix for percentage values.
         """
         rate_str = rate_str.strip()
         if "%" in rate_str:
-            return float(rate_str.replace("%", "").strip()) / 100
+            return Decimal(rate_str.replace("%", "").strip()) / Decimal("100")
         # No % symbol: treat as decimal fraction (0.05 means 5%)
-        return float(rate_str)
+        return Decimal(rate_str)
     
     def _parse_money(self, value: str) -> Decimal:
         """Parse money string to Decimal"""
