@@ -366,9 +366,13 @@ class OpenResponsesIntegration:
         )
     
     def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute Black-Scholes option price — returns COMPUTED status."""
-        from ..derivatives_guard import OptionType
-        import math
+        """Compute Black-Scholes option price — delegates to DerivativesGuard.
+        
+        Single source of truth: uses the same mpmath-based implementation
+        as DerivativesGuard to ensure deterministic consistency across paths.
+        """
+        from ..derivatives_guard import DerivativesGuard, OptionType
+        from decimal import Decimal
         
         S = args.get("spot_price", 100)
         K = args.get("strike_price", 100)
@@ -387,24 +391,24 @@ class OpenResponsesIntegration:
                 retry_message="Provide strictly positive inputs for Black-Scholes pricing.",
             )
         
-        # Black-Scholes
-        d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        
-        def norm_cdf(x):
-            return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-        
-        if opt_type == OptionType.CALL:
-            price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
-        else:
-            price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+        # Delegate to DerivativesGuard — single source of truth (mpmath)
+        guard = DerivativesGuard()
+        bs_result = guard.verify_black_scholes(
+            spot_price=S,
+            strike_price=K,
+            time_to_expiry=T,
+            risk_free_rate=r,
+            volatility=sigma,
+            option_type=opt_type,
+            llm_price="$0.00"  # Placeholder — we only need computed_price
+        )
         
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.price_option",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim
-            computed_value=f"${price:.2f}",
+            computed_value=bs_result.computed_price,
             formula="Black-Scholes: C = S·N(d₁) - K·e^(-rT)·N(d₂)"
         )
         self.audit_log.log(receipt)
@@ -415,8 +419,8 @@ class OpenResponsesIntegration:
             original_args=args,
             verified_args=args,
             result={
-                "price": f"${price:.2f}",
-                "delta": round(norm_cdf(d1) if opt_type == OptionType.CALL else norm_cdf(d1) - 1, 4),
+                "price": bs_result.computed_price,
+                "delta": bs_result.greeks["delta"] if bs_result.greeks else None,
                 "verified": False,
                 "computed": True,
                 "verified_against_llm": False
