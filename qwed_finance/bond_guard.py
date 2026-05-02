@@ -1,13 +1,17 @@
 """
 Bond Guard - Fixed income verification for bond pricing
 Deterministic verification for YTM, Duration, Convexity calculations
+
+All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, getcontext
 from typing import List, Optional, Tuple
 from enum import Enum
-import math
+
+# Set precision high enough for Newton-Raphson convergence
+getcontext().prec = 50
 
 
 class DayCountConvention(Enum):
@@ -33,7 +37,10 @@ class BondResult:
 class BondGuard:
     """
     Deterministic verification for bond calculations.
-    Uses Newton-Raphson for YTM solving - 100% deterministic.
+    Uses Newton-Raphson for YTM solving — 100% deterministic.
+
+    All internal math uses Decimal for exact arithmetic,
+    following the TradingGuard gold standard.
     """
     
     def __init__(self, tolerance_pct: float = 0.5, max_iterations: int = 100):
@@ -44,7 +51,7 @@ class BondGuard:
             tolerance_pct: Acceptable % difference for verification
             max_iterations: Max iterations for YTM solver
         """
-        self.tolerance_pct = tolerance_pct
+        self.tolerance_pct = Decimal(str(tolerance_pct))
         self.max_iterations = max_iterations
     
     def verify_ytm(
@@ -76,31 +83,44 @@ class BondGuard:
             BondResult with verification status
         """
         # Parse LLM's YTM
-        llm_rate = self._parse_rate(llm_ytm)
+        llm_rate_d = self._parse_rate(llm_ytm)
+        
+        # Convert inputs to Decimal at the boundary
+        fv = Decimal(str(face_value))
+        cr = Decimal(str(coupon_rate))
+        p = Decimal(str(price))
+        freq = Decimal(str(frequency))
         
         # Calculate periodic values
         n_periods = int(years_to_maturity * frequency)
-        coupon_payment = (face_value * coupon_rate) / frequency
+        coupon_payment = (fv * cr) / freq
         
         # Newton-Raphson to find YTM
         computed_ytm = self._solve_ytm(
-            face_value, coupon_payment, price, n_periods, frequency
+            fv, coupon_payment, p, n_periods, frequency
         )
         
         # Compare
-        diff_pct = abs(computed_ytm - llm_rate) / computed_ytm * 100 if computed_ytm > 0 else 0
+        if computed_ytm > 0:
+            diff_pct = abs(computed_ytm - llm_rate_d) / computed_ytm * 100
+        else:
+            diff_pct = Decimal("0")
         verified = diff_pct <= self.tolerance_pct
+        
+        # Format output with quantized precision
+        computed_pct = (computed_ytm * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        llm_pct = (llm_rate_d * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         
         return BondResult(
             verified=verified,
-            llm_value=f"{llm_rate * 100:.4f}%",
-            computed_value=f"{computed_ytm * 100:.4f}%",
-            difference=f"{diff_pct:.4f}%" if not verified else None,
+            llm_value=f"{llm_pct}%",
+            computed_value=f"{computed_pct}%",
+            difference=f"{diff_pct.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%" if not verified else None,
             formula_used="Newton-Raphson YTM Solver",
             details={
-                "face_value": face_value,
-                "coupon_rate": f"{coupon_rate * 100}%",
-                "price": price,
+                "face_value": str(fv),
+                "coupon_rate": f"{cr * 100}%",
+                "price": str(p),
                 "periods": n_periods,
                 "frequency": frequency
             }
@@ -108,43 +128,44 @@ class BondGuard:
     
     def _solve_ytm(
         self,
-        face_value: float,
-        coupon: float,
-        price: float,
+        face_value: Decimal,
+        coupon: Decimal,
+        price: Decimal,
         n_periods: int,
         frequency: int
-    ) -> float:
-        """Newton-Raphson YTM solver"""
+    ) -> Decimal:
+        """Newton-Raphson YTM solver using Decimal arithmetic."""
+        freq = Decimal(str(frequency))
+        
         # Initial guess (current yield)
-        ytm = (coupon * frequency) / price
+        ytm = (coupon * freq) / price
         
         for _ in range(self.max_iterations):
             # Bond price at current ytm
-            pv_coupons = sum(
-                coupon / ((1 + ytm / frequency) ** t) 
-                for t in range(1, n_periods + 1)
-            )
-            pv_face = face_value / ((1 + ytm / frequency) ** n_periods)
+            pv_coupons = Decimal("0")
+            for t in range(1, n_periods + 1):
+                pv_coupons += coupon / ((1 + ytm / freq) ** t)
+            
+            pv_face = face_value / ((1 + ytm / freq) ** n_periods)
             bond_price = pv_coupons + pv_face
             
             # Derivative (duration-based approximation)
-            dpv = -sum(
-                t * coupon / ((1 + ytm / frequency) ** (t + 1)) / frequency
-                for t in range(1, n_periods + 1)
-            )
-            dpv -= n_periods * face_value / ((1 + ytm / frequency) ** (n_periods + 1)) / frequency
+            dpv = Decimal("0")
+            for t in range(1, n_periods + 1):
+                dpv -= Decimal(str(t)) * coupon / ((1 + ytm / freq) ** (t + 1)) / freq
+            dpv -= Decimal(str(n_periods)) * face_value / ((1 + ytm / freq) ** (n_periods + 1)) / freq
             
             # Newton step
             diff = bond_price - price
-            if abs(diff) < 1e-10:
+            if abs(diff) < Decimal("1E-10"):
                 break
             
-            if abs(dpv) > 1e-10:
+            if abs(dpv) > Decimal("1E-10"):
                 ytm = ytm - diff / dpv
             
             # Keep YTM in a reasonable range for convergence
             # Upper bound 10.0 (1000%) supports distressed debt scenarios
-            ytm = max(0.0001, min(ytm, 10.0))
+            ytm = max(Decimal("0.0001"), min(ytm, Decimal("10")))
         
         return ytm
     
@@ -176,43 +197,54 @@ class BondGuard:
             BondResult with verification status
         """
         # Parse LLM's duration
-        llm_dur = float(llm_duration.replace("years", "").replace("yrs", "").strip())
+        llm_dur = Decimal(llm_duration.replace("years", "").replace("yrs", "").strip())
+        
+        # Convert to Decimal
+        fv = Decimal(str(face_value))
+        cr = Decimal(str(coupon_rate))
+        y = Decimal(str(ytm))
+        freq = Decimal(str(frequency))
         
         # Calculate duration
         n_periods = int(years_to_maturity * frequency)
-        coupon_payment = (face_value * coupon_rate) / frequency
-        periodic_rate = ytm / frequency
+        coupon_payment = (fv * cr) / freq
+        periodic_rate = y / freq
         
         # Calculate price and weighted time
-        weighted_time = 0
-        price = 0
+        weighted_time = Decimal("0")
+        price = Decimal("0")
         
         for t in range(1, n_periods + 1):
             pv = coupon_payment / ((1 + periodic_rate) ** t)
             price += pv
-            weighted_time += (t / frequency) * pv
+            weighted_time += (Decimal(str(t)) / freq) * pv
         
         # Add face value
-        pv_face = face_value / ((1 + periodic_rate) ** n_periods)
+        pv_face = fv / ((1 + periodic_rate) ** n_periods)
         price += pv_face
-        weighted_time += years_to_maturity * pv_face
+        weighted_time += Decimal(str(years_to_maturity)) * pv_face
         
         # Macaulay duration
         computed_duration = weighted_time / price
+        computed_dur_q = computed_duration.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         
         # Compare
-        diff = abs(computed_duration - llm_dur)
-        verified = diff <= 0.05  # Within 0.05 years tolerance
+        diff = abs(computed_dur_q - llm_dur)
+        verified = diff <= Decimal("0.05")  # Within 0.05 years tolerance
+        
+        # Modified duration
+        mod_duration = computed_duration / (1 + periodic_rate)
+        mod_dur_q = mod_duration.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         
         return BondResult(
             verified=verified,
-            llm_value=f"{llm_dur:.4f} years",
-            computed_value=f"{computed_duration:.4f} years",
-            difference=f"{diff:.4f} years" if not verified else None,
+            llm_value=f"{llm_dur} years",
+            computed_value=f"{computed_dur_q} years",
+            difference=f"{diff.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)} years" if not verified else None,
             formula_used="Macaulay Duration = Σ(t × PV(CFt)) / Price",
             details={
-                "price": f"${price:.2f}",
-                "modified_duration": f"{computed_duration / (1 + periodic_rate):.4f} years"
+                "price": f"${price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+                "modified_duration": f"{mod_dur_q} years"
             }
         )
     
@@ -244,38 +276,50 @@ class BondGuard:
             BondResult with verification status
         """
         # Parse LLM's convexity
-        llm_conv = float(llm_convexity.replace("years²", "").strip())
+        llm_conv = Decimal(llm_convexity.replace("years²", "").strip())
+        
+        # Convert to Decimal
+        fv = Decimal(str(face_value))
+        cr = Decimal(str(coupon_rate))
+        y = Decimal(str(ytm))
+        freq = Decimal(str(frequency))
         
         # Calculate convexity
         n_periods = int(years_to_maturity * frequency)
-        coupon_payment = (face_value * coupon_rate) / frequency
-        periodic_rate = ytm / frequency
+        coupon_payment = (fv * cr) / freq
+        periodic_rate = y / freq
         
         # Calculate weighted sum and price
-        weighted_sum = 0
-        price = 0
+        weighted_sum = Decimal("0")
+        price = Decimal("0")
         
         for t in range(1, n_periods + 1):
+            td = Decimal(str(t))
             pv = coupon_payment / ((1 + periodic_rate) ** t)
             price += pv
-            weighted_sum += t * (t + 1) * pv
+            weighted_sum += td * (td + 1) * pv
         
-        pv_face = face_value / ((1 + periodic_rate) ** n_periods)
+        pv_face = fv / ((1 + periodic_rate) ** n_periods)
         price += pv_face
-        weighted_sum += n_periods * (n_periods + 1) * pv_face
+        nd = Decimal(str(n_periods))
+        weighted_sum += nd * (nd + 1) * pv_face
         
         # Convexity in years
-        computed_convexity = weighted_sum / (price * ((1 + periodic_rate) ** 2) * (frequency ** 2))
+        computed_convexity = weighted_sum / (price * ((1 + periodic_rate) ** 2) * (freq ** 2))
+        computed_conv_q = computed_convexity.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         
         # Compare
-        diff_pct = abs(computed_convexity - llm_conv) / computed_convexity * 100 if computed_convexity > 0 else 0
+        if computed_convexity > 0:
+            diff_pct = abs(computed_convexity - llm_conv) / computed_convexity * 100
+        else:
+            diff_pct = Decimal("0")
         verified = diff_pct <= self.tolerance_pct
         
         return BondResult(
             verified=verified,
-            llm_value=f"{llm_conv:.4f}",
-            computed_value=f"{computed_convexity:.4f}",
-            difference=f"{diff_pct:.2f}%" if not verified else None,
+            llm_value=f"{llm_conv}",
+            computed_value=f"{computed_conv_q}",
+            difference=f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%" if not verified else None,
             formula_used="Convexity = Σ(t(t+1) × PV(CFt)) / (P × (1+y)²)"
         )
     
@@ -318,9 +362,9 @@ class BondGuard:
         
         return BondResult(
             verified=verified,
-            llm_value=f"${llm_val:.2f}",
-            computed_value=f"${computed:.2f}",
-            difference=f"${diff:.2f}" if not verified else None,
+            llm_value=f"${llm_val.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            computed_value=f"${computed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            difference=f"${diff.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Accrued = (Days/Period) × Coupon"
         )
     
@@ -352,28 +396,28 @@ class BondGuard:
         
         return BondResult(
             verified=verified,
-            llm_value=f"${llm_val:.2f}",
-            computed_value=f"${computed:.2f}",
-            difference=f"${diff:.2f}" if not verified else None,
+            llm_value=f"${llm_val.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            computed_value=f"${computed.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            difference=f"${diff.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Dirty Price = Clean Price + Accrued Interest"
         )
     
-    def _parse_rate(self, rate_str: str) -> float:
-        """Parse rate string to float — fail-closed, no silent guessing.
+    def _parse_rate(self, rate_str: str) -> Decimal:
+        """Parse rate string to Decimal — fail-closed, no silent guessing.
 
         Rules:
-          - "5.25%" or "5.25 %" → 0.0525  (explicit percentage)
-          - "0.0525"            → 0.0525  (explicit decimal fraction)
-          - "5.25" (no %)       → 5.25    (no guessing; caller must include '%' for percent format)
+          - "5.25%" or "5.25 %" → Decimal("0.0525")  (explicit percentage)
+          - "0.0525"            → Decimal("0.0525")  (explicit decimal fraction)
+          - "5.25" (no %)       → Decimal("5.25")    (no guessing; caller must include '%' for percent format)
 
         QWED philosophy: if format is ambiguous, do NOT guess.
         Callers must use explicit '%' suffix for percentage values.
         """
         rate_str = rate_str.strip()
         if "%" in rate_str:
-            return float(rate_str.replace("%", "").strip()) / 100
+            return Decimal(rate_str.replace("%", "").strip()) / Decimal("100")
         # No % symbol: treat as decimal fraction (0.05 means 5%)
-        return float(rate_str)
+        return Decimal(rate_str)
     
     def _parse_money(self, value: str) -> Decimal:
         """Parse money string to Decimal"""

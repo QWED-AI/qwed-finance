@@ -1,13 +1,20 @@
 """
 Derivatives Guard - Black-Scholes options pricing and margin verification
 Deterministic verification for derivatives trading
+
+Uses mpmath for arbitrary-precision transcendental functions (log, exp, sqrt, erf).
+All monetary outputs use Decimal for exact representation.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, getcontext
 from typing import Optional, Tuple
 from enum import Enum
-import math
+import mpmath
+
+# Set precision for both Decimal and mpmath
+getcontext().prec = 50
+mpmath.mp.dps = 30  # 30 decimal places for mpmath
 
 
 class OptionType(Enum):
@@ -30,7 +37,10 @@ class DerivativesResult:
 class DerivativesGuard:
     """
     Deterministic verification for derivatives pricing.
-    Uses Black-Scholes formula (pure calculus) for options verification.
+    Uses Black-Scholes formula with mpmath for arbitrary-precision
+    transcendental functions (log, exp, sqrt, erf).
+
+    All monetary outputs are quantized via Decimal for exact representation.
     """
     
     def __init__(self, tolerance_pct: float = 1.0):
@@ -40,7 +50,7 @@ class DerivativesGuard:
         Args:
             tolerance_pct: Acceptable % difference for price verification
         """
-        self.tolerance_pct = tolerance_pct
+        self.tolerance_pct = Decimal(str(tolerance_pct))
         self._sympy_available = self._check_sympy()
     
     def _check_sympy(self) -> bool:
@@ -73,6 +83,8 @@ class DerivativesGuard:
         d1 = (ln(S/K) + (r + σ²/2)*T) / (σ*√T)
         d2 = d1 - σ*√T
         
+        Uses mpmath for arbitrary-precision transcendental functions.
+        
         Args:
             spot_price: Current price of underlying (S)
             strike_price: Strike price (K)
@@ -85,21 +97,22 @@ class DerivativesGuard:
         Returns:
             DerivativesResult with verification
         """
-        S = spot_price
-        K = strike_price
-        T = time_to_expiry
-        r = risk_free_rate
-        sigma = volatility
+        # Use mpmath for high-precision transcendental math
+        S = mpmath.mpf(str(spot_price))
+        K = mpmath.mpf(str(strike_price))
+        T = mpmath.mpf(str(time_to_expiry))
+        r = mpmath.mpf(str(risk_free_rate))
+        sigma = mpmath.mpf(str(volatility))
         
         # Calculate d1 and d2
-        d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
+        d1 = (mpmath.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * mpmath.sqrt(T))
+        d2 = d1 - sigma * mpmath.sqrt(T)
         
         # Calculate option price
         if option_type == OptionType.CALL:
-            price = S * self._norm_cdf(d1) - K * math.exp(-r * T) * self._norm_cdf(d2)
+            price = S * self._norm_cdf(d1) - K * mpmath.exp(-r * T) * self._norm_cdf(d2)
         else:  # PUT
-            price = K * math.exp(-r * T) * self._norm_cdf(-d2) - S * self._norm_cdf(-d1)
+            price = K * mpmath.exp(-r * T) * self._norm_cdf(-d2) - S * self._norm_cdf(-d1)
         
         # Calculate Greeks
         greeks = self._calculate_greeks(S, K, T, r, sigma, option_type, d1, d2)
@@ -107,48 +120,50 @@ class DerivativesGuard:
         # Parse LLM price
         import re
         llm_clean = re.sub(r'[$,\s]', '', llm_price)
-        llm_decimal = float(llm_clean)
+        llm_decimal = Decimal(llm_clean)
+        
+        # Convert price to Decimal for comparison
+        price_d = Decimal(str(mpmath.nstr(price, 15)))
+        price_q = price_d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         
         # Compare
-        difference = abs(llm_decimal - price)
-        difference_pct = (difference / price) * 100 if price > 0 else 0
+        difference = abs(llm_decimal - price_d)
+        if price_d > 0:
+            difference_pct = (difference / price_d) * 100
+        else:
+            difference_pct = Decimal("0")
         
         verified = difference_pct <= self.tolerance_pct
         
         return DerivativesResult(
             verified=verified,
             llm_price=llm_price,
-            computed_price=f"${price:.2f}",
-            difference=f"${difference:.2f} ({difference_pct:.2f}%)" if not verified else None,
+            computed_price=f"${price_q}",
+            difference=f"${difference.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)} ({difference_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%)" if not verified else None,
             greeks=greeks,
             formula_used="Black-Scholes: C = S·N(d₁) - K·e^(-rT)·N(d₂)"
         )
     
-    def _norm_cdf(self, x: float) -> float:
-        """Standard normal cumulative distribution function"""
-        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+    def _norm_cdf(self, x) -> mpmath.mpf:
+        """Standard normal cumulative distribution function using mpmath."""
+        return mpmath.mpf("0.5") * (1 + mpmath.erf(x / mpmath.sqrt(2)))
     
-    def _norm_pdf(self, x: float) -> float:
-        """Standard normal probability density function"""
-        return math.exp(-0.5 * x ** 2) / math.sqrt(2 * math.pi)
+    def _norm_pdf(self, x) -> mpmath.mpf:
+        """Standard normal probability density function using mpmath."""
+        return mpmath.exp(mpmath.mpf("-0.5") * x ** 2) / mpmath.sqrt(2 * mpmath.pi)
     
     def _calculate_greeks(
         self,
-        S: float,
-        K: float,
-        T: float,
-        r: float,
-        sigma: float,
+        spot, strike, time_exp, rate, sigma,
         option_type: OptionType,
-        d1: float,
-        d2: float
+        d1, d2
     ) -> dict:
         """
         Calculate option Greeks (risk sensitivities).
         
-        All are pure calculus - 100% deterministic.
+        All computed using mpmath for precision, then quantized to Decimal for output.
         """
-        sqrt_T = math.sqrt(T)
+        sqrt_time = mpmath.sqrt(time_exp)
         
         # Delta: ∂V/∂S
         if option_type == OptionType.CALL:
@@ -157,33 +172,37 @@ class DerivativesGuard:
             delta = self._norm_cdf(d1) - 1
         
         # Gamma: ∂²V/∂S²
-        gamma = self._norm_pdf(d1) / (S * sigma * sqrt_T)
+        gamma = self._norm_pdf(d1) / (spot * sigma * sqrt_time)
         
         # Theta: ∂V/∂T (per day, so divide by 365)
-        theta_base = -(S * self._norm_pdf(d1) * sigma) / (2 * sqrt_T)
+        theta_base = -(spot * self._norm_pdf(d1) * sigma) / (2 * sqrt_time)
         if option_type == OptionType.CALL:
-            theta = theta_base - r * K * math.exp(-r * T) * self._norm_cdf(d2)
+            theta = theta_base - rate * strike * mpmath.exp(-rate * time_exp) * self._norm_cdf(d2)
         else:
-            theta = theta_base + r * K * math.exp(-r * T) * self._norm_cdf(-d2)
+            theta = theta_base + rate * strike * mpmath.exp(-rate * time_exp) * self._norm_cdf(-d2)
         theta_daily = theta / 365
         
         # Vega: ∂V/∂σ (per 1% move, so divide by 100)
-        vega = S * sqrt_T * self._norm_pdf(d1)
+        vega = spot * sqrt_time * self._norm_pdf(d1)
         vega_pct = vega / 100
         
         # Rho: ∂V/∂r (per 1% move, so divide by 100)
         if option_type == OptionType.CALL:
-            rho = K * T * math.exp(-r * T) * self._norm_cdf(d2)
+            rho = strike * time_exp * mpmath.exp(-rate * time_exp) * self._norm_cdf(d2)
         else:
-            rho = -K * T * math.exp(-r * T) * self._norm_cdf(-d2)
+            rho = -strike * time_exp * mpmath.exp(-rate * time_exp) * self._norm_cdf(-d2)
         rho_pct = rho / 100
         
+        # Quantize output via Decimal for exact representation
+        def to_dec(val, places):
+            return str(Decimal(str(mpmath.nstr(val, 15))).quantize(Decimal(places), rounding=ROUND_HALF_UP))
+        
         return {
-            "delta": round(delta, 4),
-            "gamma": round(gamma, 6),
-            "theta": round(theta_daily, 4),    # Per day
-            "vega": round(vega_pct, 4),        # Per 1% vol move
-            "rho": round(rho_pct, 4)           # Per 1% rate move
+            "delta": to_dec(delta, "0.0001"),
+            "gamma": to_dec(gamma, "0.000001"),
+            "theta": to_dec(theta_daily, "0.0001"),    # Per day
+            "vega": to_dec(vega_pct, "0.0001"),        # Per 1% vol move
+            "rho": to_dec(rho_pct, "0.0001")           # Per 1% rate move
         }
     
     def verify_delta(
@@ -202,23 +221,32 @@ class DerivativesGuard:
         
         Delta = ∂V/∂S = N(d₁) for calls, N(d₁)-1 for puts
         """
-        S, K, T, r, sigma = spot_price, strike_price, time_to_expiry, risk_free_rate, volatility
+        S = mpmath.mpf(str(spot_price))
+        K = mpmath.mpf(str(strike_price))
+        T = mpmath.mpf(str(time_to_expiry))
+        r = mpmath.mpf(str(risk_free_rate))
+        sigma = mpmath.mpf(str(volatility))
         
-        d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
+        d1 = (mpmath.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * mpmath.sqrt(T))
         
         if option_type == OptionType.CALL:
             computed_delta = self._norm_cdf(d1)
         else:
             computed_delta = self._norm_cdf(d1) - 1
         
-        difference = abs(llm_delta - computed_delta)
-        verified = difference <= tolerance
+        # Convert to Decimal for comparison
+        computed_d = Decimal(str(mpmath.nstr(computed_delta, 15)))
+        llm_d = Decimal(str(llm_delta))
+        tol_d = Decimal(str(tolerance))
+        
+        difference = abs(llm_d - computed_d)
+        verified = difference <= tol_d
         
         return DerivativesResult(
             verified=verified,
             llm_price=str(llm_delta),
-            computed_price=f"{computed_delta:.4f}",
-            difference=f"{difference:.4f}" if not verified else None,
+            computed_price=f"{computed_d.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}",
+            difference=f"{difference.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Delta = N(d₁) for calls"
         )
     
@@ -245,8 +273,13 @@ class DerivativesGuard:
         Returns:
             DerivativesResult
         """
-        required_margin = maintenance_margin * position_value
-        should_margin_call = account_equity < required_margin
+        # Use Decimal for exact comparison
+        equity_d = Decimal(str(account_equity))
+        maint_d = Decimal(str(maintenance_margin))
+        pos_d = Decimal(str(position_value))
+        
+        required_margin = maint_d * pos_d
+        should_margin_call = equity_d < required_margin
         
         verified = (llm_margin_call == should_margin_call)
         
@@ -254,7 +287,7 @@ class DerivativesGuard:
             verified=verified,
             llm_price="MARGIN_CALL" if llm_margin_call else "NO_CALL",
             computed_price="MARGIN_CALL" if should_margin_call else "NO_CALL",
-            margin_status=f"Equity: ${account_equity:.2f}, Required: ${required_margin:.2f}",
+            margin_status=f"Equity: ${equity_d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}, Required: ${required_margin.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
             formula_used="Margin Call if Equity < MaintenanceReq × PositionValue"
         )
     
@@ -312,6 +345,8 @@ class DerivativesGuard:
         
         C - P = S - K*e^(-rT)
         
+        Uses mpmath for exp() to avoid float precision loss.
+        
         Args:
             call_price: Market call price
             put_price: Market put price
@@ -324,18 +359,27 @@ class DerivativesGuard:
         Returns:
             DerivativesResult
         """
-        S, K, T, r = spot_price, strike_price, time_to_expiry, risk_free_rate
+        # Use mpmath for exp, then Decimal for comparison
+        S = mpmath.mpf(str(spot_price))
+        K = mpmath.mpf(str(strike_price))
+        T = mpmath.mpf(str(time_to_expiry))
+        r = mpmath.mpf(str(risk_free_rate))
         
-        lhs = call_price - put_price
-        rhs = S - K * math.exp(-r * T)
+        lhs = mpmath.mpf(str(call_price)) - mpmath.mpf(str(put_price))
+        rhs = S - K * mpmath.exp(-r * T)
         
-        difference = abs(lhs - rhs)
-        verified = difference <= tolerance
+        # Convert to Decimal for exact comparison
+        lhs_d = Decimal(str(mpmath.nstr(lhs, 15)))
+        rhs_d = Decimal(str(mpmath.nstr(rhs, 15)))
+        tol_d = Decimal(str(tolerance))
+        
+        difference = abs(lhs_d - rhs_d)
+        verified = difference <= tol_d
         
         return DerivativesResult(
             verified=verified,
-            llm_price=f"C-P = {lhs:.2f}",
-            computed_price=f"S-Ke^(-rT) = {rhs:.2f}",
-            difference=f"{difference:.2f}" if not verified else None,
+            llm_price=f"C-P = {lhs_d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            computed_price=f"S-Ke^(-rT) = {rhs_d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}",
+            difference=f"{difference.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}" if not verified else None,
             formula_used="Put-Call Parity: C - P = S - K·e^(-rT)"
         )
