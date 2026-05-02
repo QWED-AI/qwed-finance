@@ -313,7 +313,7 @@ class FinanceVerifier:
             rate: Annual interest rate
             periods: Number of years
             llm_output: LLM's answer
-            compounding: "annual", "quarterly", "monthly", "daily"
+            compounding: "annual", "semi-annual", "quarterly", "monthly", "daily"
             
         Returns:
             VerificationResult
@@ -322,7 +322,7 @@ class FinanceVerifier:
         r = Decimal(str(rate))
         t = periods
         
-        # Compounding frequency
+        # Compounding frequency — fail-closed: reject unknown frequencies
         n_map = {
             "annual": 1,
             "semi-annual": 2,
@@ -330,7 +330,12 @@ class FinanceVerifier:
             "monthly": 12,
             "daily": 365
         }
-        n = n_map.get(compounding, 1)
+        if compounding not in n_map:
+            raise ValueError(
+                f"Unknown compounding frequency: '{compounding}'. "
+                f"Accepted values: {', '.join(sorted(n_map.keys()))}"
+            )
+        n = n_map[compounding]
         
         # A = P(1 + r/n)^(nt)
         compound_factor = (1 + r / n) ** (n * t)
