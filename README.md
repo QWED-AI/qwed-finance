@@ -140,7 +140,7 @@ result = guard.verify_black_scholes(
     option_type=OptionType.CALL,
     llm_price="$3.50"
 )
-# result.greeks = {"delta": 0.4502, "gamma": 0.0389, ...}
+# result.greeks = {"delta": "0.4502", "gamma": "0.0389", ...}  # Decimal-quantized strings
 ```
 
 ### 4. Message Guard (ISO 20022 / SWIFT)
@@ -518,7 +518,7 @@ QWED-Finance uses **SymPy** (symbolic math) instead of floating-point arithmetic
 |---------|----------------------|
 | **Data Transmission** | ❌ No API calls, no cloud processing |
 | **Storage** | ❌ Nothing stored, pure computation |
-| **Dependencies** | ✅ Local-only (SymPy, Z3, SQLGlot) |
+| **Dependencies** | ✅ Local-only (SymPy, mpmath, Z3, SQLGlot) |
 | **Audit Trail** | ✅ Cryptographic receipts, fully reproducible |
 
 **Perfect for:**
@@ -588,6 +588,13 @@ Typically <5ms for simple calculations, <50ms for complex derivatives pricing. T
 - [x] RiskGuard: VaR, Beta, Sharpe, Sortino, Max Drawdown
 - [x] `verification_mode` field (SYMBOLIC/HEURISTIC)
 
+### ✅ Released (v2.1.0)
+- [x] Security audit: Fail-closed enforcement in OpenResponses integration
+- [x] AML high-risk country list unified across all paths
+- [x] Rate parsing heuristic removed (fail-closed, returns Decimal)
+- [x] Float→Decimal/mpmath migration for BondGuard, DerivativesGuard, RiskGuard
+- [x] 150 tests (including 23 float contamination + N-04 regression)
+
 ### 🚧 In Progress
 - [ ] More regulatory frameworks (MiFID II, Basel III)
 - [ ] Credit risk models (PD, LGD, EAD)
@@ -630,7 +637,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: QWED-AI/qwed-finance@v2.0.1
+      - uses: QWED-AI/qwed-finance@v2.1.0
         with:
           test-script: tests/verify_agent.py
 ```
