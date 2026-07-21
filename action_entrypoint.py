@@ -19,6 +19,15 @@ from pathlib import Path
 # Add current directory to path for local imports
 sys.path.insert(0, "/app")
 
+
+def _safe_resolve(path: str, base: str = "/app") -> str:
+    """Resolve a path safely, preventing directory traversal outside base."""
+    resolved = (Path(base) / path).resolve()
+    base_resolved = Path(base).resolve()
+    if not str(resolved).startswith(str(base_resolved)):
+        raise ValueError(f"Path traversal detected: {path} resolves outside {base}")
+    return str(resolved)
+
 # Lazy imports to avoid loading unnecessary dependencies
 def get_finance_verifier():
     from qwed_finance import FinanceVerifier
@@ -210,8 +219,18 @@ def action_scan_file(scan_type: str):
     import pandas as pd
     
     data_file = os.getenv("INPUT_DATA_FILE", "")
-    
-    if not data_file or not os.path.exists(data_file):
+
+    if not data_file:
+        print(f"❌ Error: No data file specified")
+        sys.exit(1)
+
+    try:
+        data_file = _safe_resolve(data_file)
+    except ValueError as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
+    if not os.path.exists(data_file):
         print(f"❌ Error: Data file not found: {data_file}")
         sys.exit(1)
     
