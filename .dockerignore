@@ -1,0 +1,39 @@
+# Version control
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Tests and examples
+tests/
+examples/
+
+# CI/CD
+.github/
+
+# Node.js
+npm/
+node_modules/
+
+# Documentation
+*.md
+*.rst
+
+# Environment
+.env
+.envrc
+.venv
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
