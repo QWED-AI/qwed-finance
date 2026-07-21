@@ -378,9 +378,10 @@ def action_scan_file(scan_type: str):
 
 
 def main():
+    from qwed_finance import __version__
     action = os.getenv("INPUT_ACTION", "verify")
     
-    print(f"🏦 QWED Finance Guard v2.0")
+    print(f"🏦 QWED Finance Guard v{__version__}")
     print(f"   Action: {action}")
     print(f"{'='*50}")
     

@@ -11,6 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       
-      - uses: QWED-AI/qwed-finance@8002d00bbea4fbd05d486e9d5860a0ea2ca81bfd # v1.1.4
+      - uses: QWED-AI/qwed-finance@19ce969f21d1fc2019da4d89fff23bc108e15a98 # v2.1.0
         with:
           test-script: tests/verify_agent.py
