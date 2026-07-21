@@ -20,10 +20,13 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 
-def _safe_resolve(path: str, base: str = "/app") -> str:
+def _safe_resolve(path: str, base: str | None = None) -> str:
     """Resolve a path safely, preventing directory traversal outside base."""
-    resolved = (Path(base) / path).resolve()
+    if base is None:
+        base = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
     base_resolved = Path(base).resolve()
+    path_obj = Path(path)
+    resolved = (base_resolved / path).resolve() if not path_obj.is_absolute() else path_obj.resolve()
     if not resolved.is_relative_to(base_resolved):
         raise ValueError(f"Path traversal detected: {path} resolves outside {base}")
     return str(resolved)
