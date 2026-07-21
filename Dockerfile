@@ -10,10 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies from project metadata (single source of truth)
 COPY pyproject.toml /app/pyproject.toml
-RUN pip install --no-cache-dir -e /app
-
-# Copy source code
 COPY qwed_finance/ /app/qwed_finance/
+RUN pip install --no-cache-dir /app pandas
 
 # Copy action entrypoint
 COPY action_entrypoint.py /app/action_entrypoint.py

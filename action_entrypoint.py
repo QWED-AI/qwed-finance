@@ -24,7 +24,7 @@ def _safe_resolve(path: str, base: str = "/app") -> str:
     """Resolve a path safely, preventing directory traversal outside base."""
     resolved = (Path(base) / path).resolve()
     base_resolved = Path(base).resolve()
-    if not str(resolved).startswith(str(base_resolved)):
+    if not resolved.is_relative_to(base_resolved):
         raise ValueError(f"Path traversal detected: {path} resolves outside {base}")
     return str(resolved)
 
@@ -221,7 +221,7 @@ def action_scan_file(scan_type: str):
     data_file = os.getenv("INPUT_DATA_FILE", "")
 
     if not data_file:
-        print(f"❌ Error: No data file specified")
+        print("❌ Error: No data file specified")
         sys.exit(1)
 
     try:
