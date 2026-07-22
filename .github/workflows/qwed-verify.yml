@@ -17,6 +17,6 @@ jobs:
           verification_type: npv
           cashflows: "-1000,200,300,400,500"
           rate: "0.10"
-          llm_output: "$300.00"
+          llm_output: "$71.78"
           output_format: text
           fail_on_error: true
