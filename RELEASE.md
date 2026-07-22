@@ -7,6 +7,7 @@ When bumping the version (e.g., `2.1.0` → `2.2.0`), update all of the followin
 - `qwed_finance/__init__.py` — `__version__`
 - `pyproject.toml` — `version` field
 - `npm/package.json` — `version` field
+- `npm/package-lock.json` — `version` field (both root and packages entry)
 - `action_entrypoint.py` — imports `__version__` from `qwed_finance` (automatic)
 - `.github/workflows/qwed-verify.yml` — pin SHA and comment
 

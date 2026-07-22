@@ -13,4 +13,10 @@ jobs:
       
       - uses: QWED-AI/qwed-finance@19ce969f21d1fc2019da4d89fff23bc108e15a98 # v2.1.0
         with:
-          test-script: tests/verify_agent.py
+          action: verify
+          verification_type: npv
+          cashflows: "-1000,200,300,400,500"
+          rate: "0.10"
+          llm_output: "$300.00"
+          output_format: text
+          fail_on_error: true

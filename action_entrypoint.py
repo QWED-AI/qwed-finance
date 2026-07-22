@@ -58,7 +58,7 @@ def set_output(name: str, value: str):
     # print(f"::set-output name={name}::{value}") # Deprecated
 
 
-def generate_sarif(findings: list, repo: str) -> dict:
+def generate_sarif(findings: list, repo: str, version: str = "2.1.0") -> dict:
     """Generate SARIF output for GitHub Security tab"""
     return {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
@@ -67,7 +67,7 @@ def generate_sarif(findings: list, repo: str) -> dict:
             "tool": {
                 "driver": {
                     "name": "QWED Finance Guard",
-                    "version": "2.0.0",
+                    "version": version,
                     "informationUri": "https://github.com/QWED-AI/qwed-finance",
                     "rules": [
                         {
@@ -365,8 +365,9 @@ def action_scan_file(scan_type: str):
     # SARIF output
     output_format = os.getenv("INPUT_OUTPUT_FORMAT", "text")
     if output_format == "sarif" and findings:
+        from qwed_finance import __version__
         repo = os.getenv("GITHUB_REPOSITORY", "unknown")
-        sarif = generate_sarif(findings, repo)
+        sarif = generate_sarif(findings, repo, version=__version__)
         sarif_path = "qwed-finance-results.sarif"
         with open(sarif_path, "w") as f:
             json.dump(sarif, f, indent=2)
