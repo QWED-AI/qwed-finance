@@ -1,6 +1,6 @@
 {
     "name": "@qwed-ai/finance",
-    "version": "1.0.0",
+    "version": "2.1.0",
     "description": "TypeScript wrapper for QWED-Finance - Deterministic verification for banking AI",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",

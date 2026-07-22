@@ -58,8 +58,10 @@ def set_output(name: str, value: str):
     # print(f"::set-output name={name}::{value}") # Deprecated
 
 
-def generate_sarif(findings: list, repo: str) -> dict:
+def generate_sarif(findings: list, repo: str, version: str | None = None) -> dict:
     """Generate SARIF output for GitHub Security tab"""
+    from qwed_finance import __version__
+    ver = version or __version__
     return {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
@@ -67,7 +69,7 @@ def generate_sarif(findings: list, repo: str) -> dict:
             "tool": {
                 "driver": {
                     "name": "QWED Finance Guard",
-                    "version": "2.0.0",
+                    "version": ver,
                     "informationUri": "https://github.com/QWED-AI/qwed-finance",
                     "rules": [
                         {
@@ -378,9 +380,10 @@ def action_scan_file(scan_type: str):
 
 
 def main():
+    from qwed_finance import __version__
     action = os.getenv("INPUT_ACTION", "verify")
     
-    print(f"🏦 QWED Finance Guard v2.0")
+    print(f"🏦 QWED Finance Guard v{__version__}")
     print(f"   Action: {action}")
     print(f"{'='*50}")
     
