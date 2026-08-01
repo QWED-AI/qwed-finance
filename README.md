@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/logo.png" alt="QWED Logo" width="80" height="80">
+</div>
+
 # QWED-Finance 🏦
 
 **Deterministic verification middleware for banking and financial AI.**
