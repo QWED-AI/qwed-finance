@@ -106,7 +106,10 @@ class UCPIntegration:
         
         amount = token_data.get("amount", 0)
         currency = token_data.get("currency", "USD")
-        country = token_data.get("customer_country", "US")
+        # No default: a missing customer_country must fail closed through
+        # verify_aml_flag (which rejects None as unevaluable) instead of
+        # clearing as low-risk "US".
+        country = token_data.get("customer_country")
         kyc_verified = token_data.get("kyc_verified", False)
         
         # ===== Check 1: Amount limits =====
