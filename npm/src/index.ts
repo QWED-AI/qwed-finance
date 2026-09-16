@@ -271,21 +271,35 @@ function runBridgeScript(
                 reject(new Error('Bridge timed out'));
             });
         }, BRIDGE_TIMEOUT_MS);
+        shell.on('error', (err: Error) => {
+            // Spawn failures (missing pythonPath) surface here,
+            // asynchronously — the constructor try/catch cannot see them.
+            // Without this listener Node would throw and kill the host
+            // instead of rejecting the bridge call (fail closed).
+            settle(() => reject(err));
+        });
         shell.on('message', (message: string) => {
-            stdoutBytes += Buffer.byteLength(message, 'utf8');
-            if (stdoutBytes > MAX_BRIDGE_STDOUT_BYTES) {
-                settle(() => {
-                    try {
-                        shell.kill();
-                    } catch {
-                        // Already exited; the close handler settles below.
-                    }
-                    reject(new Error('Bridge output exceeded the transport limit'));
-                });
-                return;
-            }
             lines.push(message);
         });
+        // Enforce the output cap on raw stdout bytes, not transformed
+        // messages: the line splitter buffers newline-free output
+        // internally, so message-level counting could overshoot.
+        const stdoutStream = shell.stdout;
+        if (stdoutStream !== null) {
+            stdoutStream.on('data', (chunk: Buffer) => {
+                stdoutBytes += chunk.length;
+                if (stdoutBytes > MAX_BRIDGE_STDOUT_BYTES) {
+                    settle(() => {
+                        try {
+                            shell.kill();
+                        } catch {
+                            // Already exited; the close handler settles below.
+                        }
+                        reject(new Error('Bridge output exceeded the transport limit'));
+                    });
+                }
+            });
+        }
         try {
             // Send before end: end() closes stdin, so ending first would
             // fail the send with write-after-end and drop the payload.
