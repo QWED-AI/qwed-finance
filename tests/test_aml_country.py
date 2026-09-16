@@ -10,6 +10,7 @@ import pytest
 
 from qwed_finance.compliance_guard import ComplianceGuard, normalize_country_code
 from qwed_finance.integrations.open_responses import OpenResponsesIntegration
+from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -87,3 +88,27 @@ def test_tool_twin_still_clears_legitimate():
     )
     assert result.result["needs_flagging"] is False
     assert result.result["reason"] == "Clear"
+
+
+def test_ucp_missing_customer_country_pending_review():
+    result = UCPIntegration().verify_payment_token(
+        {"amount": 100, "currency": "USD", "kyc_verified": True}
+    )
+    assert result.status == PaymentStatus.PENDING_REVIEW
+    assert result.can_proceed is False
+    assert any(
+        "AML_COUNTRY_UNVERIFIABLE" in (receipt.violations or [])
+        for receipt in result.receipts
+    )
+
+
+def test_ucp_explicit_country_still_clears():
+    result = UCPIntegration().verify_payment_token(
+        {
+            "amount": 100,
+            "currency": "USD",
+            "customer_country": "US",
+            "kyc_verified": True,
+        }
+    )
+    assert result.can_proceed is True
