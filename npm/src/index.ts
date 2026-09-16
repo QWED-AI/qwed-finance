@@ -62,6 +62,35 @@ const MAX_ARGV_PAYLOAD_CHARS = 65536;
 /** ISO 3166-1 alpha-2 shape, enforced after trim + case normalization. */
 const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
 
+/**
+ * Officially-assigned ISO 3166-1 alpha-2 set. Shape validation alone
+ * admits nonexistent jurisdictions (ZZ, AA) that the AML rule then
+ * treats as cleared — fail closed on unassigned codes instead.
+ */
+const ISO_ALPHA_2 = new Set([
+    'AF', 'AX', 'AL', 'DZ', 'AS', 'AD', 'AO', 'AI', 'AQ', 'AG', 'AR', 'AM',
+    'AW', 'AU', 'AT', 'AZ', 'BS', 'BH', 'BD', 'BB', 'BY', 'BE', 'BZ', 'BJ',
+    'BM', 'BT', 'BO', 'BQ', 'BA', 'BW', 'BV', 'BR', 'IO', 'BN', 'BG', 'BF',
+    'BI', 'KH', 'CM', 'CA', 'KY', 'CF', 'TD', 'CL', 'CN', 'CX', 'CC', 'CO',
+    'KM', 'CG', 'CD', 'CK', 'CR', 'CI', 'HR', 'CU', 'CW', 'CY', 'CZ', 'DK',
+    'DJ', 'DM', 'DO', 'EC', 'EG', 'SV', 'GQ', 'ER', 'EE', 'SZ', 'ET', 'FK',
+    'FO', 'FJ', 'FI', 'FR', 'GF', 'PF', 'TF', 'GA', 'GM', 'GE', 'DE', 'GH',
+    'GI', 'GR', 'GL', 'GD', 'GP', 'GU', 'GT', 'GG', 'GN', 'GW', 'GY', 'HT',
+    'HM', 'VA', 'HN', 'HK', 'HU', 'IS', 'IN', 'ID', 'IR', 'IQ', 'IE', 'IM',
+    'IL', 'IT', 'JM', 'JP', 'JE', 'JO', 'KZ', 'KE', 'KI', 'KP', 'KR', 'KW',
+    'KG', 'LA', 'LV', 'LB', 'LS', 'LR', 'LY', 'LI', 'LT', 'LU', 'MO', 'MG',
+    'MW', 'MY', 'MV', 'ML', 'MT', 'MH', 'MQ', 'MR', 'MU', 'YT', 'MX', 'FM',
+    'MD', 'MC', 'MN', 'ME', 'MS', 'MA', 'MZ', 'MM', 'NA', 'NR', 'NP', 'NL',
+    'NC', 'NZ', 'NI', 'NE', 'NG', 'NU', 'NF', 'MK', 'MP', 'NO', 'OM', 'PK',
+    'PW', 'PS', 'PA', 'PG', 'PY', 'PE', 'PH', 'PN', 'PL', 'PT', 'PR', 'QA',
+    'RE', 'RO', 'RU', 'RW', 'BL', 'SH', 'KN', 'LC', 'MF', 'PM', 'VC', 'WS',
+    'SM', 'ST', 'SA', 'SN', 'RS', 'SG', 'SX', 'SK', 'SI', 'SB', 'SO', 'ZA',
+    'GS', 'SS', 'ES', 'LK', 'SD', 'SR', 'SJ', 'SZ', 'SE', 'CH', 'SY', 'TW',
+    'TJ', 'TZ', 'TH', 'TL', 'TG', 'TK', 'TO', 'TT', 'TN', 'TR', 'TM', 'TC',
+    'TV', 'UG', 'UA', 'AE', 'GB', 'US', 'UM', 'UY', 'UZ', 'VU', 'VE', 'VN',
+    'VG', 'VI', 'WF', 'EH', 'YE', 'ZM', 'ZW',
+]);
+
 /** Reject anything that is not a finite JS number (strings, NaN, ±Infinity). */
 function assertFiniteNumber(value: unknown, name: string): number {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -89,9 +118,9 @@ function assertCountryCode(value: unknown): string {
         );
     }
     const normalized = value.trim().toUpperCase();
-    if (!COUNTRY_CODE_PATTERN.test(normalized)) {
+    if (!COUNTRY_CODE_PATTERN.test(normalized) || !ISO_ALPHA_2.has(normalized)) {
         throw new RangeError(
-            'countryCode must be an ISO 3166-1 alpha-2 code (two letters)'
+            'countryCode must be an assigned ISO 3166-1 alpha-2 code (two letters)'
         );
     }
     return normalized;
@@ -103,18 +132,13 @@ function assertCountryCode(value: unknown): string {
 
 const VERIFY_NPV_SCRIPT = [
     'import json, sys',
-    'from qwed_finance import OpenResponsesIntegration',
+    'from qwed_finance import FinanceVerifier',
     'payload = json.loads(sys.argv[1])',
-    'qwed = OpenResponsesIntegration()',
-    'result = qwed.handle_tool_call("calculate_npv", {',
-    '    "cashflows": payload["cashflows"],',
-    '    "rate": payload["rate"],',
-    '})',
+    'result = FinanceVerifier().verify_npv(',
+    '    payload["cashflows"], payload["rate"], payload["llm_output"])',
     'print(json.dumps({',
-    '    "verified": result.receipt.verified if result.receipt else False,',
-    '    "computed_value": result.result.get("npv") if result.result else None,',
-    '    "receipt_id": result.receipt.receipt_id if result.receipt else None,',
-    '    "input_hash": result.receipt.input_hash if result.receipt else None',
+    '    "verified": result.verified,',
+    '    "computed_value": result.computed_value,',
     '}))',
 ].join('\n');
 
@@ -215,9 +239,13 @@ export class FinanceVerifier {
         );
         assertNonEmptyString(llmOutput, 'llmOutput', 65536);
 
+        // The claim travels with the facts: the bridge compares it against
+        // the recomputed NPV (FinanceVerifier.verify_npv) instead of
+        // returning a computation-only verdict.
         const body = await this.runBridge(VERIFY_NPV_SCRIPT, {
             cashflows: checkedFlows,
             rate: checkedRate,
+            llm_output: llmOutput,
         });
         if (typeof body['verified'] !== 'boolean') {
             throw new Error('NPV bridge returned a malformed verdict envelope');
@@ -366,9 +394,10 @@ export class UCPVerifier {
         }
         const checkedAmount = assertFiniteNumber(tokenData['amount'], 'tokenData.amount');
         const checkedCurrency = assertNonEmptyString(tokenData['currency'], 'tokenData.currency', 16);
-        const checkedCountry = assertNonEmptyString(
-            tokenData['customer_country'], 'tokenData.customer_country', 16
-        );
+        // Same ISO normalization as checkAML: Python compares
+        // country_code.upper() against the high-risk set with no trim,
+        // so ' YE ' would miss the set and bypass the flag rule.
+        const checkedCountry = assertCountryCode(tokenData['customer_country']);
         if (typeof tokenData['kyc_verified'] !== 'boolean') {
             throw new TypeError('tokenData.kyc_verified must be a boolean');
         }
@@ -391,13 +420,15 @@ export class UCPVerifier {
         });
         const body = firstJsonObject(lines);
         const receiptIds: unknown = body?.['receipt_ids'];
+        const violations: unknown = body?.['violations'];
         if (
             body === null ||
             typeof body['can_proceed'] !== 'boolean' ||
             (body['status'] !== 'approved' &&
                 body['status'] !== 'blocked' &&
                 body['status'] !== 'pending_review') ||
-            !Array.isArray(body['violations']) ||
+            !Array.isArray(violations) ||
+            !violations.every((entry: unknown) => typeof entry === 'string') ||
             !Array.isArray(receiptIds) ||
             !receiptIds.every((id: unknown) => typeof id === 'string')
         ) {
@@ -406,7 +437,7 @@ export class UCPVerifier {
         return {
             can_proceed: body['can_proceed'] as boolean,
             status: body['status'] as 'approved' | 'blocked' | 'pending_review',
-            violations: (body['violations'] as unknown[]).map(String),
+            violations: violations as string[],
             receipt_ids: receiptIds as string[],
         };
     }
