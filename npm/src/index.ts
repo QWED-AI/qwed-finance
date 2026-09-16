@@ -29,7 +29,7 @@
  * ```
  */
 
-import { spawn } from 'child_process';
+import { PythonShell } from 'python-shell';
 
 export interface VerificationResult {
     verified: boolean;
@@ -221,12 +221,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Execute a static bridge script, feeding the payload as JSON over the
- * child's stdin pipe. Argv carries only `['-c', <static script>]`, so no
- * caller-controlled value ever appears in the process command line
- * (CWE-200) or counts against OS command-line limits.
- *
- * stdout is split into lines for the envelope scan; output and runtime
- * are bounded, and every failure mode rejects (fail closed).
+ * child's stdin pipe (python-shell `.send()`). Argv carries only the
+ * static script, so no caller-controlled value ever appears in the
+ * process command line (CWE-200) or counts against OS command-line
+ * limits. stderr is drained by the transport library, so a chatty child
+ * cannot deadlock the pipe. stdout and runtime are bounded, and every
+ * failure mode rejects (fail closed).
  */
 function runBridgeScript(
     pythonPath: string,
@@ -248,62 +248,57 @@ function runBridgeScript(
                 finish();
             }
         };
-        let child: ReturnType<typeof spawn>;
+        let shell: PythonShell;
         try {
-            child = spawn(pythonPath, ['-c', script], {
-                stdio: ['pipe', 'pipe', 'pipe'],
+            shell = new PythonShell(script, {
+                mode: 'text',
+                pythonPath,
+                pythonOptions: ['-c'],
             });
         } catch (err) {
             reject(err);
             return;
         }
+        const lines: string[] = [];
+        let stdoutBytes = 0;
         const timer = setTimeout(() => {
             settle(() => {
-                child.kill();
+                try {
+                    shell.kill();
+                } catch {
+                    // Already exited; the close handler settles below.
+                }
                 reject(new Error('Bridge timed out'));
             });
         }, BRIDGE_TIMEOUT_MS);
-        let stdout = '';
-        let stdoutBytes = 0;
-        child.on('error', (err: Error) => {
-            settle(() => reject(err));
-        });
-        const stdin = child.stdin;
-        const stdoutStream = child.stdout;
-        if (stdin === null || stdoutStream === null) {
-            settle(() => {
-                child.kill();
-                reject(new Error('Bridge stdio unavailable'));
-            });
-            return;
-        }
-        stdin.on('error', () => {
-            // The close/error handlers below settle the promise; this
-            // guard only prevents an unhandled 'error' event on EPIPE.
-        });
-        stdoutStream.on('data', (chunk: Buffer) => {
-            stdoutBytes += chunk.length;
+        shell.on('message', (message: string) => {
+            stdoutBytes += Buffer.byteLength(message, 'utf8');
             if (stdoutBytes > MAX_BRIDGE_STDOUT_BYTES) {
                 settle(() => {
-                    child.kill();
+                    try {
+                        shell.kill();
+                    } catch {
+                        // Already exited; the close handler settles below.
+                    }
                     reject(new Error('Bridge output exceeded the transport limit'));
                 });
                 return;
             }
-            stdout += chunk;
-        });
-        child.on('close', (code: number | null) => {
-            settle(() => {
-                if (code !== 0) {
-                    reject(new Error(`Bridge exited with code ${String(code)}`));
-                    return;
-                }
-                resolve(stdout.split(/\r?\n/));
-            });
+            lines.push(message);
         });
         try {
-            stdin.write(input);
-            stdin.end();
+            // Send before end: end() closes stdin, so ending first would
+            // fail the send with write-after-end and drop the payload.
+            shell.send(input);
+            shell.end((err: Error | null) => {
+                settle(() => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(lines);
+                });
+            });
         } catch (err) {
             settle(() => reject(err));
         }
