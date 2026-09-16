@@ -331,7 +331,10 @@ class OpenResponsesIntegration:
     def _verify_aml(self, args: Dict[str, Any]) -> VerifiedToolCall:
         """Compute AML check — delegates to ComplianceGuard for consistent rules."""
         amount = args.get("amount", 0)
-        country_code = args.get("country_code", "US")
+        # No default: a missing country_code must fail closed through
+        # normalize_country_code (which rejects None) instead of
+        # clearing as low-risk "US".
+        country_code = args.get("country_code")
 
         # Shared canonicalization (same helper as ComplianceGuard, #70):
         # an unevaluable jurisdiction fails closed to flagged, never Clear.
