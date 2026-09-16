@@ -121,9 +121,10 @@ class CrossGuard:
     # free-text 70/72 carriers). 58A is an MT202 field; when present in
     # an MT103 body it is still screened rather than trusted.
     _PARTY_FIELD_TAGS = frozenset({
-        "50K", "50F", "50H",
+        "50A", "50K", "50F", "50H",
         "51A",
         "52A", "52D",
+        "53A", "54A", "55A",
         "56A", "56C", "56D",
         "57A", "57B", "57C", "57D",
         "58A", "58D",
@@ -132,10 +133,12 @@ class CrossGuard:
     })
 
     # One MT field block: `:TAG:` header plus all continuation lines up to
-    # the next `:TAG:` header or end of message.
+    # the next `:TAG:` header or end of message. Greedy tempered dot (not
+    # a reluctant quantifier) with no top-level anchor alternation, so the
+    # pattern is unambiguous to readers and static analysis alike.
     _FIELD_BLOCK_RE = re.compile(
-        r"^:([0-9]{2}[A-Z]?):(.*?)(?=^:[0-9]{2}[A-Z]?:|\Z)",
-        re.MULTILINE | re.DOTALL,
+        r"^:(?P<tag>\d{2}[A-Z]?):(?P<value>(?:(?!\r?\n:\d{2}[A-Z]?:)[\s\S])*)",
+        re.MULTILINE,
     )
 
     def _extract_entities_from_mt(self, mt_string: str) -> List[str]:
@@ -152,24 +155,66 @@ class CrossGuard:
             return entities
 
         for block in self._FIELD_BLOCK_RE.finditer(mt_string):
-            if block.group(1).upper() not in self._PARTY_FIELD_TAGS:
+            if block.group("tag").upper() not in self._PARTY_FIELD_TAGS:
                 continue
-            for line in block.group(2).splitlines():
+            for line in block.group("value").splitlines():
                 text = line.strip()
-                # Skip the block-4 trailer: it is message framing, not an
-                # entity, and would otherwise pollute the screened list.
-                if not text or text == "-}":
+                # Skip block-4 trailers (exact "-}" or "-}{5:...}" framing):
+                # message framing, not an entity.
+                if not text or text.startswith("-}"):
                     continue
                 if text not in entities:
                     entities.append(text)
+            self._add_structured_name(block.group("tag").upper(), block.group("value"), entities)
 
         return entities
+
+    @staticmethod
+    def _add_structured_name(tag: str, value: str, entities: List[str]) -> None:
+        """Screen the reconstructed name of structured 50F/59F blocks.
+
+        Numbered components (``1/NAME``, ``2/ADDRESS``) split a party name
+        across lines; screening the prefixed fragments alone misses a
+        sanctioned name spread over components. Join the ``1/`` name lines
+        (prefixes stripped) and screen the joined form in addition to the
+        individual lines.
+        """
+        if tag not in ("50F", "59F"):
+            return
+        parts = []
+        for line in value.splitlines():
+            text = line.strip()
+            match = re.match(r"^1/(.+)$", text)
+            if match and match.group(1).strip():
+                parts.append(match.group(1).strip())
+        if len(parts) > 1:
+            joined = " ".join(parts)
+            if joined not in entities:
+                entities.append(joined)
     
+    # Minimum entity length for the reverse match direction (see below).
+    _MIN_REVERSE_MATCH_LEN = 8
+
     def _check_sanctions(self, entity: str, sanctions_list: List[str]) -> bool:
-        """Check if entity matches any sanctioned name (fuzzy match)"""
+        """Check if entity matches any sanctioned name (fuzzy match).
+
+        Forward direction (sanctioned name inside the entity) is exact and
+        always applies. The reverse direction (entity inside a sanctioned
+        name) is gated on entity length: short continuation fragments such
+        as address cities ("LONDON" vs "BANK OF LONDON PLC") would
+        otherwise reject legitimate payments, while reconstructed and
+        full-length names still match in either direction. Full
+        name/address disambiguation is tracked in #76/#77/#78.
+        """
         entity_lower = entity.lower()
         for sanctioned in sanctions_list:
-            if sanctioned.lower() in entity_lower or entity_lower in sanctioned.lower():
+            sanctioned_lower = sanctioned.lower()
+            if sanctioned_lower in entity_lower:
+                return True
+            if (
+                len(entity) >= self._MIN_REVERSE_MATCH_LEN
+                and entity_lower in sanctioned_lower
+            ):
                 return True
         return False
     

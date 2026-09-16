@@ -83,7 +83,67 @@ def test_free_text_70_72_lines_screened():
         ":50K:/111\nALICE",
         ":59:/222\nBOB",
         ":70:/INS/BANNED BANK PLC",
+        ":72:/INS/SECOND CHANCE BANK",
         ":71A:OUR",
     )
-    result = CrossGuard().verify_swift_with_sanctions(message, ["BANNED BANK PLC"])
+    result = CrossGuard().verify_swift_with_sanctions(
+        message, ["BANNED BANK PLC", "SECOND CHANCE BANK"]
+    )
+    assert result.passed is False
+    assert any("SECOND CHANCE BANK" in entity for entity in result.screened_entities)
+
+
+def test_extractor_rejects_non_string_input():
+    assert CrossGuard()._extract_entities_from_mt(None) == []
+    assert CrossGuard()._extract_entities_from_mt(12345) == []
+
+
+def test_extractor_dedupes_and_drops_trailer():
+    entities = CrossGuard()._extract_entities_from_mt(
+        ":59:/222\nBOB\nBOB\n-}"
+    )
+    assert entities == ["/222", "BOB"]
+
+
+def test_trailer_with_block5_suffix_dropped():
+    entities = CrossGuard()._extract_entities_from_mt(
+        ":59:/222\nBOB\n-}{5:{CHK:ABCDEF123456}}"
+    )
+    assert entities == ["/222", "BOB"]
+
+
+def test_50a_value_screened():
+    message = _mt(
+        ":50A:/111\nBANNED ORDERING BANK",
+        ":59:/222\nBOB",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(
+        message, ["BANNED ORDERING BANK"]
+    )
+    assert result.passed is False
+    assert result.guard_results["ComplianceGuard.sanctions"] is False
+
+
+def test_address_fragment_does_not_false_positive():
+    message = _mt(
+        ":50K:/111\nALICE",
+        ":59:/222\nBOB\nLONDON",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(
+        message, ["BANK OF LONDON PLC"]
+    )
+    assert result.passed is True
+
+
+def test_split_structured_name_reconstructed():
+    message = _mt(
+        ":50K:/111\nALICE",
+        ":59F:/98765432\n1/BANNED ENTITY\n1/LTD",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(
+        message, ["BANNED ENTITY LTD"]
+    )
     assert result.passed is False
