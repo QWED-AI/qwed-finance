@@ -6,6 +6,26 @@ Handles KYC/AML rules with formal boolean logic proofs
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from enum import Enum
+import unicodedata
+
+
+def normalize_country_code(value: Any) -> str:
+    """Canonicalize a caller-supplied country code to strict alpha-2 form.
+
+    Applies NFKC normalization (fullwidth look-alikes), stripping, and
+    uppercasing, then requires exactly two ASCII letters. Anything else —
+    padded/punctuated/alpha-3/full-name/non-string values — raises
+    ValueError so callers fail closed instead of silently missing the
+    high-risk set membership (strict-liability bypass, #70).
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"country_code must be a string, got {type(value).__name__}")
+    normalized = unicodedata.normalize("NFKC", value).strip().upper()
+    if len(normalized) != 2 or not normalized.isascii() or not normalized.isalpha():
+        raise ValueError(
+            f"country_code {value!r} is not evaluable as ISO 3166-1 alpha-2"
+        )
+    return normalized
 
 
 class RiskLevel(Enum):
@@ -90,7 +110,19 @@ class ComplianceGuard:
             ComplianceResult with verification status
         """
         threshold = self.aml_thresholds.get(jurisdiction, self.aml_thresholds["DEFAULT"])
-        is_high_risk = country_code.upper() in self.high_risk_countries
+        try:
+            country_code = normalize_country_code(country_code)
+        except ValueError as exc:
+            # Fail closed: an unevaluable jurisdiction must force a flag,
+            # never clear as compliant (#70 strict-liability slice).
+            return ComplianceResult(
+                compliant=False,
+                rule_violated="AML_COUNTRY_UNVERIFIABLE",
+                expected_action="FLAG",
+                llm_action="FLAG" if llm_flagged else "APPROVE",
+                proof=f"Country jurisdiction could not be evaluated: {exc} — blocked pending review",
+            )
+        is_high_risk = country_code in self.high_risk_countries
         
         # Deterministic rule: MUST flag if amount >= threshold OR high-risk country
         should_flag = amount >= threshold or is_high_risk
