@@ -9,7 +9,7 @@ from enum import Enum
 import json
 
 from ..finance_verifier import FinanceVerifier
-from ..compliance_guard import ComplianceGuard
+from ..compliance_guard import ComplianceGuard, normalize_country_code
 from ..calendar_guard import CalendarGuard
 from ..derivatives_guard import DerivativesGuard, OptionType
 from ..models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
@@ -331,11 +331,43 @@ class OpenResponsesIntegration:
     def _verify_aml(self, args: Dict[str, Any]) -> VerifiedToolCall:
         """Compute AML check — delegates to ComplianceGuard for consistent rules."""
         amount = args.get("amount", 0)
-        country_code = args.get("country_code", "US")
-        
+        # No default: a missing country_code must fail closed through
+        # normalize_country_code (which rejects None) instead of
+        # clearing as low-risk "US".
+        country_code = args.get("country_code")
+
+        # Shared canonicalization (same helper as ComplianceGuard, #70):
+        # an unevaluable jurisdiction fails closed to flagged, never Clear.
+        try:
+            country_code = normalize_country_code(country_code)
+        except ValueError as exc:
+            receipt = ReceiptGenerator.create_receipt(
+                guard_name="OpenResponses.check_aml_compliance",
+                engine=VerificationEngine.Z3,
+                llm_output=str(args),
+                verified=False,
+                computed_value="True",
+                formula="Unevaluable jurisdiction blocks fail-closed",
+            )
+            self.audit_log.log(receipt)
+            return VerifiedToolCall(
+                status=ToolCallStatus.COMPUTED,
+                tool_name="check_aml_compliance",
+                original_args=args,
+                verified_args=args,
+                result={
+                    "needs_flagging": True,
+                    "reason": f"Unevaluable jurisdiction: {exc}",
+                    "verified": False,
+                    "computed": True,
+                    "verified_against_llm": False,
+                },
+                receipt=receipt,
+            )
+
         # Delegate to ComplianceGuard for consistent high-risk country list
         # (S-06 fix: no more duplicated subset of countries)
-        is_high_risk = country_code.upper() in self.compliance.high_risk_countries
+        is_high_risk = country_code in self.compliance.high_risk_countries
         threshold = self.compliance.aml_thresholds.get("USA", 10000)
         needs_flagging = amount >= threshold or is_high_risk
         

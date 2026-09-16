@@ -6,6 +6,49 @@ Handles KYC/AML rules with formal boolean logic proofs
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from enum import Enum
+import unicodedata
+
+
+ISO_ALPHA_2_COUNTRIES = frozenset(
+    "AF AX AL DZ AS AD AO AI AQ AG AR AM AW AU AT AZ "
+    "BS BH BD BB BY BE BZ BJ BM BT BO BQ BA BW BV BR IO BN BG BF BI "
+    "KH CM CA KY CF TD CL CN CX CC CO KM CG CD CK CR CI HR CU CV CW CY CZ "
+    "DK DJ DM DO EC EG SV GQ ER EE SZ ET FK FO FJ FI FR GF PF TF GA GM GE "
+    "DE GH GI GR GL GD GP GU GT GG GN GW GY HT HM VA HN HK HU IS IN ID IR "
+    "IQ IE IM IL IT JM JP JE JO KZ KE KI KP KR KW KG LA LV LB LS LR LY LI "
+    "LT LU MO MG MW MY MV ML MT MH MQ MR MU YT MX FM MD MC MN ME MS MA MZ "
+    "MM NA NR NP NL NC NZ NI NE NG NU NF MK MP NO OM PK PW PS PA PG PY PE "
+    "PH PN PL PT PR QA RE RO RU RW BL SH KN LC MF PM VC WS SM ST SA SN RS "
+    "SG SX SK SI SB SC SO ZA GS SS ES LK SD SL SR SJ SZ SE CH SY TW TJ TZ "
+    "TH TL TG TK TO TT TN TR TM TC TV UG UA AE GB US UM UY UZ VU VE VN VG "
+    "VI WF EH YE ZM ZW".split()
+)
+"""Officially-assigned ISO 3166-1 alpha-2 codes (249)."""
+
+
+def normalize_country_code(value: Any) -> str:
+    """Canonicalize a caller-supplied country code to strict alpha-2 form.
+
+    Applies NFKC normalization (fullwidth look-alikes), stripping, and
+    uppercasing, then requires membership in the assigned ISO 3166-1
+    alpha-2 set. Shape alone is not enough: unassigned codes such as ZZ
+    would otherwise miss the high-risk set and clear as compliant.
+    Anything unevaluable — punctuated/alpha-3/full-name/non-string/
+    unassigned values — raises ValueError so callers fail closed instead
+    of silently missing the high-risk set membership (strict-liability
+    bypass, #70).
+
+    Mirrors the assigned-code set enforced by the TypeScript SDK
+    (npm/src/index.ts); both are static standard data.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"country_code must be a string, got {type(value).__name__}")
+    normalized = unicodedata.normalize("NFKC", value).strip().upper()
+    if normalized not in ISO_ALPHA_2_COUNTRIES:
+        raise ValueError(
+            f"country_code {value!r} is not evaluable as ISO 3166-1 alpha-2"
+        )
+    return normalized
 
 
 class RiskLevel(Enum):
@@ -90,7 +133,19 @@ class ComplianceGuard:
             ComplianceResult with verification status
         """
         threshold = self.aml_thresholds.get(jurisdiction, self.aml_thresholds["DEFAULT"])
-        is_high_risk = country_code.upper() in self.high_risk_countries
+        try:
+            country_code = normalize_country_code(country_code)
+        except ValueError as exc:
+            # Fail closed: an unevaluable jurisdiction must force a flag,
+            # never clear as compliant (#70 strict-liability slice).
+            return ComplianceResult(
+                compliant=False,
+                rule_violated="AML_COUNTRY_UNVERIFIABLE",
+                expected_action="FLAG",
+                llm_action="FLAG" if llm_flagged else "APPROVE",
+                proof=f"Country jurisdiction could not be evaluated: {exc} — blocked pending review",
+            )
+        is_high_risk = country_code in self.high_risk_countries
         
         # Deterministic rule: MUST flag if amount >= threshold OR high-risk country
         should_flag = amount >= threshold or is_high_risk
