@@ -147,3 +147,27 @@ def test_split_structured_name_reconstructed():
         message, ["BANNED ENTITY LTD"]
     )
     assert result.passed is False
+
+
+def test_single_structured_component_stripped_for_matching():
+    entities = CrossGuard()._extract_entities_from_mt(":59F:/1\n1/IRAN BANK\n-}")
+    assert "IRAN BANK" in entities
+    message = _mt(
+        ":50K:/111\nALICE",
+        ":59F:/1\n1/IRAN BANK",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(
+        message, ["IRAN BANK INTERNATIONAL"]
+    )
+    assert result.passed is False
+
+
+def test_short_party_name_still_matches():
+    message = _mt(
+        ":50K:/111\nALICE",
+        ":59:/222\nIRAN",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(message, ["BANK OF IRAN"])
+    assert result.passed is False

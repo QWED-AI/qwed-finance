@@ -83,10 +83,13 @@ class CrossGuard:
         
         # Step 2: Extract entity names from MT message
         entities = self._extract_entities_from_mt(mt_string)
-        
+        name_set = set(self._extract_name_entities(mt_string))
+
         # Step 3: Check each entity against sanctions list
         for entity in entities:
-            is_sanctioned = self._check_sanctions(entity, sanctions_list)
+            is_sanctioned = self._check_sanctions(
+                entity, sanctions_list, allow_reverse=(entity in name_set)
+            )
             
             if is_sanctioned:
                 violations.append(f"SANCTIONS HIT: '{entity}' found in sanctions list")
@@ -154,67 +157,120 @@ class CrossGuard:
         if not isinstance(mt_string, str):
             return entities
 
-        for block in self._FIELD_BLOCK_RE.finditer(mt_string):
-            if block.group("tag").upper() not in self._PARTY_FIELD_TAGS:
-                continue
-            for line in block.group("value").splitlines():
+        for tag, value in self._iter_party_blocks(mt_string):
+            for line in value.splitlines():
                 text = line.strip()
-                # Skip block-4 trailers (exact "-}" or "-}{5:...}" framing):
+                # Skip block-4 trailers ("-}" or "-}{5:...}" framing):
                 # message framing, not an entity.
                 if not text or text.startswith("-}"):
                     continue
                 if text not in entities:
                     entities.append(text)
-            self._add_structured_name(block.group("tag").upper(), block.group("value"), entities)
+            # Structured blocks: also screen the stripped name components
+            # and their joined form (see _extract_name_entities).
+            for name in self._structured_names(tag, value):
+                if name not in entities:
+                    entities.append(name)
 
         return entities
 
     @staticmethod
-    def _add_structured_name(tag: str, value: str, entities: List[str]) -> None:
-        """Screen the reconstructed name of structured 50F/59F blocks.
-
-        Numbered components (``1/NAME``, ``2/ADDRESS``) split a party name
-        across lines; screening the prefixed fragments alone misses a
-        sanctioned name spread over components. Join the ``1/`` name lines
-        (prefixes stripped) and screen the joined form in addition to the
-        individual lines.
-        """
+    def _structured_names(tag: str, value: str) -> List[str]:
+        """Stripped ``1/`` name components plus their joined form."""
         if tag not in ("50F", "59F"):
+            return []
+        parts = CrossGuard._structured_name_parts(tag, value)
+        if not parts:
+            return []
+        return parts + ([" ".join(parts)] if len(parts) > 1 else [])
+
+    # Party tags that identify (rather than describe) the party: their
+    # name lines match bidirectionally. Narrative/free-text carriers
+    # (70/72) match forward-only — a fragment there must never bless or
+    # condemn via substring coincidence.
+    _NAME_FIELD_TAGS = frozenset({
+        "50A", "50K", "50F", "50H",
+        "51A",
+        "52A", "52D",
+        "53A", "54A", "55A",
+        "56A", "56C", "56D",
+        "57A", "57B", "57C", "57D",
+        "58A", "58D",
+        "59", "59A", "59F",
+    })
+
+    def _iter_party_blocks(self, mt_string: str):
+        """Yield (tag, value) for every party-tagged field block."""
+        if not isinstance(mt_string, str):
             return
+        for block in self._FIELD_BLOCK_RE.finditer(mt_string):
+            tag = block.group("tag").upper()
+            if tag in self._PARTY_FIELD_TAGS:
+                yield tag, block.group("value")
+
+    @staticmethod
+    def _structured_names(tag: str, value: str) -> List[str]:
+        """Stripped ``1/`` name components plus their joined form."""
+        if tag not in ("50F", "59F"):
+            return []
         parts = []
         for line in value.splitlines():
-            text = line.strip()
-            match = re.match(r"^1/(.+)$", text)
+            match = re.match(r"^1/(.+)$", line.strip())
             if match and match.group(1).strip():
                 parts.append(match.group(1).strip())
-        if len(parts) > 1:
-            joined = " ".join(parts)
-            if joined not in entities:
-                entities.append(joined)
-    
-    # Minimum entity length for the reverse match direction (see below).
-    _MIN_REVERSE_MATCH_LEN = 8
+        if not parts:
+            return []
+        return parts + ([" ".join(parts)] if len(parts) > 1 else [])
 
-    def _check_sanctions(self, entity: str, sanctions_list: List[str]) -> bool:
+    def _extract_name_entities(self, mt_string: str) -> List[str]:
+        """Entity strings that identify the party (not describe it).
+
+        Structured ``1/`` name components (stripped, plus their joined
+        form) and the first non-account content line of other party
+        blocks. Only these match bidirectionally; every other screened
+        line matches forward-only.
+        """
+        names: List[str] = []
+        for tag, value in self._iter_party_blocks(mt_string):
+            if tag in ("50F", "59F"):
+                for name in self._structured_names(tag, value):
+                    if name not in names:
+                        names.append(name)
+                continue
+            if tag in ("70", "72"):
+                continue
+            for line in value.splitlines():
+                text = line.strip()
+                if not text or text.startswith("-}") or text.startswith("/"):
+                    continue
+                if text not in names:
+                    names.append(text)
+                break
+        return names
+    
+    def _check_sanctions(
+        self,
+        entity: str,
+        sanctions_list: List[str],
+        allow_reverse: bool = True,
+    ) -> bool:
         """Check if entity matches any sanctioned name (fuzzy match).
 
-        Forward direction (sanctioned name inside the entity) is exact and
-        always applies. The reverse direction (entity inside a sanctioned
-        name) is gated on entity length: short continuation fragments such
-        as address cities ("LONDON" vs "BANK OF LONDON PLC") would
-        otherwise reject legitimate payments, while reconstructed and
-        full-length names still match in either direction. Full
-        name/address disambiguation is tracked in #76/#77/#78.
+        Forward direction (sanctioned name inside the entity) always
+        applies. The reverse direction (entity inside a sanctioned name)
+        applies only to name-provenance entities: short continuation
+        fragments such as address cities ("LONDON" vs "BANK OF LONDON
+        PLC") would otherwise reject legitimate payments, while a party
+        actually named by a short string ("IRAN" vs "BANK OF IRAN")
+        still matches. Full name/address disambiguation is tracked in
+        #76/#77/#78.
         """
         entity_lower = entity.lower()
         for sanctioned in sanctions_list:
             sanctioned_lower = sanctioned.lower()
             if sanctioned_lower in entity_lower:
                 return True
-            if (
-                len(entity) >= self._MIN_REVERSE_MATCH_LEN
-                and entity_lower in sanctioned_lower
-            ):
+            if allow_reverse and entity_lower in sanctioned_lower:
                 return True
         return False
     
