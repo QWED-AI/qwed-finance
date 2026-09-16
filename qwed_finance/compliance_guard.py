@@ -33,7 +33,7 @@ def normalize_country_code(value: Any) -> str:
     uppercasing, then requires membership in the assigned ISO 3166-1
     alpha-2 set. Shape alone is not enough: unassigned codes such as ZZ
     would otherwise miss the high-risk set and clear as compliant.
-    Anything unevaluable — padded/punctuated/alpha-3/full-name/non-string/
+    Anything unevaluable — punctuated/alpha-3/full-name/non-string/
     unassigned values — raises ValueError so callers fail closed instead
     of silently missing the high-risk set membership (strict-liability
     bypass, #70).
