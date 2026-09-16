@@ -9,10 +9,11 @@
  * - TypeScript types are compile-time only. Every public method validates
  *   its inputs at runtime before use (CWE-843).
  * - Caller data NEVER enters executed Python source. All bridge scripts
- *   below are static constants; payloads travel as a single JSON argv
- *   element, so hostile values (quotes, backslashes, newlines, Python
- *   conditional-expression fragments) cannot break out of a literal
- *   (CWE-94). See #58, #59.
+ *   below are static constants; payloads travel as JSON over the child's
+ *   stdin pipe, never the command line — hostile values (quotes,
+ *   backslashes, newlines, Python conditional-expression fragments)
+ *   cannot break out of a literal (CWE-94), and no caller payload is
+ *   observable in process listings (CWE-200). See #58, #59.
  * - Bridge output is parsed defensively: the first JSON-object line wins,
  *   its shape is validated, and any deviation (empty output, unparseable
  *   output, wrong shape) rejects instead of resolving a default verdict.
@@ -28,7 +29,7 @@
  * ```
  */
 
-import { PythonShell } from 'python-shell';
+import { spawn } from 'child_process';
 
 export interface VerificationResult {
     verified: boolean;
@@ -56,8 +57,14 @@ export interface PaymentVerificationResult {
 // Runtime input validation (TypeScript annotations are erased at runtime)
 // ---------------------------------------------------------------------------
 
-/** Upper bound on the serialized argv payload (OS command-line limits). */
-const MAX_ARGV_PAYLOAD_CHARS = 65536;
+/** Upper bound on the serialized stdin payload, measured in UTF-8 bytes. */
+const MAX_BRIDGE_PAYLOAD_BYTES = 65536;
+
+/** Upper bound on captured bridge stdout (verdict envelopes are tiny). */
+const MAX_BRIDGE_STDOUT_BYTES = 1048576;
+
+/** Wall-clock bound per bridge invocation. */
+const BRIDGE_TIMEOUT_MS = 60000;
 
 /** ISO 3166-1 alpha-2 shape, enforced after trim + case normalization. */
 const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
@@ -72,8 +79,8 @@ const ISO_ALPHA_2 = new Set([
     'AW', 'AU', 'AT', 'AZ', 'BS', 'BH', 'BD', 'BB', 'BY', 'BE', 'BZ', 'BJ',
     'BM', 'BT', 'BO', 'BQ', 'BA', 'BW', 'BV', 'BR', 'IO', 'BN', 'BG', 'BF',
     'BI', 'KH', 'CM', 'CA', 'KY', 'CF', 'TD', 'CL', 'CN', 'CX', 'CC', 'CO',
-    'KM', 'CG', 'CD', 'CK', 'CR', 'CI', 'HR', 'CU', 'CW', 'CY', 'CZ', 'DK',
-    'DJ', 'DM', 'DO', 'EC', 'EG', 'SV', 'GQ', 'ER', 'EE', 'SZ', 'ET', 'FK',
+    'KM', 'CG', 'CD', 'CK', 'CR', 'CI', 'HR', 'CU', 'CV', 'CW', 'CY', 'CZ', 'DK',
+    'DJ', 'DM', 'DO', 'EC', 'EG', 'SV', 'GQ', 'ER', 'EE', 'ET', 'FK',
     'FO', 'FJ', 'FI', 'FR', 'GF', 'PF', 'TF', 'GA', 'GM', 'GE', 'DE', 'GH',
     'GI', 'GR', 'GL', 'GD', 'GP', 'GU', 'GT', 'GG', 'GN', 'GW', 'GY', 'HT',
     'HM', 'VA', 'HN', 'HK', 'HU', 'IS', 'IN', 'ID', 'IR', 'IQ', 'IE', 'IM',
@@ -84,8 +91,8 @@ const ISO_ALPHA_2 = new Set([
     'NC', 'NZ', 'NI', 'NE', 'NG', 'NU', 'NF', 'MK', 'MP', 'NO', 'OM', 'PK',
     'PW', 'PS', 'PA', 'PG', 'PY', 'PE', 'PH', 'PN', 'PL', 'PT', 'PR', 'QA',
     'RE', 'RO', 'RU', 'RW', 'BL', 'SH', 'KN', 'LC', 'MF', 'PM', 'VC', 'WS',
-    'SM', 'ST', 'SA', 'SN', 'RS', 'SG', 'SX', 'SK', 'SI', 'SB', 'SO', 'ZA',
-    'GS', 'SS', 'ES', 'LK', 'SD', 'SR', 'SJ', 'SZ', 'SE', 'CH', 'SY', 'TW',
+    'SM', 'ST', 'SA', 'SN', 'RS', 'SG', 'SX', 'SK', 'SI', 'SB', 'SC', 'SO', 'ZA',
+    'GS', 'SS', 'ES', 'LK', 'SD', 'SL', 'SR', 'SJ', 'SZ', 'SE', 'CH', 'SY', 'TW',
     'TJ', 'TZ', 'TH', 'TL', 'TG', 'TK', 'TO', 'TT', 'TN', 'TR', 'TM', 'TC',
     'TV', 'UG', 'UA', 'AE', 'GB', 'US', 'UM', 'UY', 'UZ', 'VU', 'VE', 'VN',
     'VG', 'VI', 'WF', 'EH', 'YE', 'ZM', 'ZW',
@@ -133,7 +140,7 @@ function assertCountryCode(value: unknown): string {
 const VERIFY_NPV_SCRIPT = [
     'import json, sys',
     'from qwed_finance import FinanceVerifier',
-    'payload = json.loads(sys.argv[1])',
+    'payload = json.load(sys.stdin)',
     'result = FinanceVerifier().verify_npv(',
     '    payload["cashflows"], payload["rate"], payload["llm_output"])',
     'print(json.dumps({',
@@ -145,7 +152,7 @@ const VERIFY_NPV_SCRIPT = [
 const VERIFY_LOAN_SCRIPT = [
     'import json, sys',
     'from qwed_finance import OpenResponsesIntegration',
-    'payload = json.loads(sys.argv[1])',
+    'payload = json.load(sys.stdin)',
     'qwed = OpenResponsesIntegration()',
     'result = qwed.handle_tool_call("calculate_loan_payment", {',
     '    "principal": payload["principal"],',
@@ -162,7 +169,7 @@ const VERIFY_LOAN_SCRIPT = [
 const CHECK_AML_SCRIPT = [
     'import json, sys',
     'from qwed_finance import OpenResponsesIntegration',
-    'payload = json.loads(sys.argv[1])',
+    'payload = json.load(sys.stdin)',
     'qwed = OpenResponsesIntegration()',
     'result = qwed.handle_tool_call("check_aml_compliance", {',
     '    "amount": payload["amount"],',
@@ -174,7 +181,7 @@ const CHECK_AML_SCRIPT = [
 const VERIFY_TOKEN_SCRIPT = [
     'import json, sys',
     'from qwed_finance import UCPIntegration',
-    'payload = json.loads(sys.argv[1])',
+    'payload = json.load(sys.stdin)',
     'ucp = UCPIntegration()',
     'result = ucp.verify_payment_token(payload["token"])',
     'print(json.dumps({',
@@ -210,6 +217,97 @@ function firstJsonObject(lines: string[] | undefined): Record<string, unknown> |
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Execute a static bridge script, feeding the payload as JSON over the
+ * child's stdin pipe. Argv carries only `['-c', <static script>]`, so no
+ * caller-controlled value ever appears in the process command line
+ * (CWE-200) or counts against OS command-line limits.
+ *
+ * stdout is split into lines for the envelope scan; output and runtime
+ * are bounded, and every failure mode rejects (fail closed).
+ */
+function runBridgeScript(
+    pythonPath: string,
+    script: string,
+    payload: Record<string, unknown>
+): Promise<string[]> {
+    const input = JSON.stringify(payload);
+    if (Buffer.byteLength(input, 'utf8') > MAX_BRIDGE_PAYLOAD_BYTES) {
+        return Promise.reject(
+            new RangeError('Bridge payload exceeds the transport limit')
+        );
+    }
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (finish: () => void): void => {
+            if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                finish();
+            }
+        };
+        let child: ReturnType<typeof spawn>;
+        try {
+            child = spawn(pythonPath, ['-c', script], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        const timer = setTimeout(() => {
+            settle(() => {
+                child.kill();
+                reject(new Error('Bridge timed out'));
+            });
+        }, BRIDGE_TIMEOUT_MS);
+        let stdout = '';
+        let stdoutBytes = 0;
+        child.on('error', (err: Error) => {
+            settle(() => reject(err));
+        });
+        const stdin = child.stdin;
+        const stdoutStream = child.stdout;
+        if (stdin === null || stdoutStream === null) {
+            settle(() => {
+                child.kill();
+                reject(new Error('Bridge stdio unavailable'));
+            });
+            return;
+        }
+        stdin.on('error', () => {
+            // The close/error handlers below settle the promise; this
+            // guard only prevents an unhandled 'error' event on EPIPE.
+        });
+        stdoutStream.on('data', (chunk: Buffer) => {
+            stdoutBytes += chunk.length;
+            if (stdoutBytes > MAX_BRIDGE_STDOUT_BYTES) {
+                settle(() => {
+                    child.kill();
+                    reject(new Error('Bridge output exceeded the transport limit'));
+                });
+                return;
+            }
+            stdout += chunk;
+        });
+        child.on('close', (code: number | null) => {
+            settle(() => {
+                if (code !== 0) {
+                    reject(new Error(`Bridge exited with code ${String(code)}`));
+                    return;
+                }
+                resolve(stdout.split(/\r?\n/));
+            });
+        });
+        try {
+            stdin.write(input);
+            stdin.end();
+        } catch (err) {
+            settle(() => reject(err));
+        }
+    });
 }
 
 /**
@@ -299,7 +397,7 @@ export class FinanceVerifier {
     }
 
     /**
-     * Execute a static bridge script with a JSON argv payload.
+     * Execute a static bridge script with a JSON stdin payload.
      * Rejects on transport failure, empty output, or unparseable output —
      * callers must treat rejection as "not verified" (fail closed).
      */
@@ -307,15 +405,7 @@ export class FinanceVerifier {
         script: string,
         payload: Record<string, unknown>
     ): Promise<Record<string, unknown>> {
-        const arg = JSON.stringify(payload);
-        if (arg.length > MAX_ARGV_PAYLOAD_CHARS) {
-            throw new RangeError('Bridge payload exceeds the argv transport limit');
-        }
-        const lines = await PythonShell.runString(script, {
-            mode: 'text',
-            pythonPath: this.pythonPath,
-            args: [arg],
-        });
+        const lines = await runBridgeScript(this.pythonPath, script, payload);
         const body = firstJsonObject(lines);
         if (body === null) {
             throw new Error('Bridge produced no parseable verdict envelope');
@@ -344,14 +434,9 @@ export class ComplianceGuard {
         const checkedAmount = assertFiniteNumber(amount, 'amount');
         const checkedCountry = assertCountryCode(countryCode);
 
-        const arg = JSON.stringify({ amount: checkedAmount, country_code: checkedCountry });
-        if (arg.length > MAX_ARGV_PAYLOAD_CHARS) {
-            throw new RangeError('Bridge payload exceeds the argv transport limit');
-        }
-        const lines = await PythonShell.runString(CHECK_AML_SCRIPT, {
-            mode: 'text',
-            pythonPath: this.pythonPath,
-            args: [arg],
+        const lines = await runBridgeScript(this.pythonPath, CHECK_AML_SCRIPT, {
+            amount: checkedAmount,
+            country_code: checkedCountry,
         });
         const body = firstJsonObject(lines);
         if (
@@ -402,21 +487,13 @@ export class UCPVerifier {
             throw new TypeError('tokenData.kyc_verified must be a boolean');
         }
 
-        const arg = JSON.stringify({
+        const lines = await runBridgeScript(this.pythonPath, VERIFY_TOKEN_SCRIPT, {
             token: {
                 amount: checkedAmount,
                 currency: checkedCurrency,
                 customer_country: checkedCountry,
                 kyc_verified: tokenData['kyc_verified'],
             },
-        });
-        if (arg.length > MAX_ARGV_PAYLOAD_CHARS) {
-            throw new RangeError('Bridge payload exceeds the argv transport limit');
-        }
-        const lines = await PythonShell.runString(VERIFY_TOKEN_SCRIPT, {
-            mode: 'text',
-            pythonPath: this.pythonPath,
-            args: [arg],
         });
         const body = firstJsonObject(lines);
         const receiptIds: unknown = body?.['receipt_ids'];
