@@ -13,6 +13,7 @@ from ..compliance_guard import (
     has_mixed_scripts,
     normalize_for_screening,
     sanctions_match,
+    validate_amount,
 )
 from ..message_guard import MessageGuard, MessageType
 from ..query_guard import QueryGuard
@@ -109,8 +110,30 @@ class UCPIntegration:
         """
         violations = []
         receipts = []
-        
-        amount = token_data.get("amount", 0)
+
+        # Fail closed on unevaluable amounts before any comparison: str/None
+        # payloads crash `>`/`<=` with TypeError, escaping the verifier
+        # instead of verdicting (#45 residual).
+        try:
+            amount = validate_amount(token_data.get("amount"), "amount")
+        except ValueError as exc:
+            violations.append(f"Invalid amount: {exc}")
+            receipt0 = ReceiptGenerator.create_receipt(
+                guard_name="UCP.verify_amount",
+                engine=VerificationEngine.DECIMAL,
+                llm_output=str(token_data.get("amount")),
+                verified=False,
+                violations=[f"Invalid amount: {exc}"],
+            )
+            receipts.append(receipt0)
+            self.audit_log.log(receipt0)
+            return PaymentVerificationResult(
+                status=PaymentStatus.BLOCKED,
+                action=action,
+                can_proceed=False,
+                violations=violations,
+                receipts=receipts,
+            )
         currency = token_data.get("currency", "USD")
         # No default: a missing customer_country must fail closed through
         # verify_aml_flag (which rejects None as unevaluable) instead of
