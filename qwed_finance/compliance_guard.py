@@ -73,41 +73,57 @@ def validate_amount(value: Any, field: str = "amount") -> int | float:
     return value
 
 
-_IGNORABLE_CHARS_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
-_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
-_CYRILLIC_RE = re.compile(r"[\u0400-\u04ff]")
-_GREEK_RE = re.compile(r"[\u0370-\u03ff]")
+_IGNORABLE_CHARS_RE = re.compile(
+    "[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u061c]"
+)
 
 
 def normalize_for_screening(value: Any) -> str:
     """Canonicalize a party string for sanctions containment checks.
 
     NFKC fold (fullwidth/homoglyph forms), ignorable strip (zero-width,
-    bidi controls, BOM), punctuation → space, casefold, whitespace
-    collapse. Applied to BOTH sides of every containment check, so
-    one-char perturbations (extra spaces, hyphens, dots, full-width)
-    cannot break the match (#76).
+    bidi controls/isolates, BOM, Arabic letter mark), punctuation →
+    space, casefold, whitespace collapse. Unicode letters are preserved
+    (``str.isalnum`` is script-aware): identical non-Latin names match
+    instead of both collapsing to empty. Applied to BOTH sides of every
+    containment check, so one-char perturbations (extra spaces, hyphens,
+    dots, full-width, bidi isolates) cannot break the match (#76).
     """
     if not isinstance(value, str):
         return ""
     text = unicodedata.normalize("NFKC", value)
     text = _IGNORABLE_CHARS_RE.sub("", text)
-    text = _NON_ALNUM_RE.sub(" ", text.casefold())
+    text = "".join(char if char.isalnum() else " " for char in text.casefold())
     return re.sub(r"\s+", " ", text).strip()
 
 
-def has_mixed_scripts(value: str) -> bool:
-    """Detect Latin mixed with Cyrillic/Greek look-alike scripts.
+def _script_of(char: str) -> str:
+    """Unicode script family of a letter, by character-name prefix."""
+    return unicodedata.name(char, "").split(" ")[0]
 
-    Such names cannot be substring-screened at all: a Cyrillic 'а'
+
+_NON_LATIN_SCRIPTS = frozenset({
+    "CYRILLIC", "GREEK", "ARABIC", "HEBREW", "ARMENIAN", "GEORGIAN",
+    "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "DEVANAGARI",
+})
+
+
+def has_mixed_scripts(value: str) -> bool:
+    """Detect Latin mixed with a non-Latin letter script.
+
+    Such names cannot be substring-screened reliably: a Cyrillic 'а'
     never equals Latin 'a' even after NFKC. Callers must fail safe to
-    manual review instead of clearing (#76 residual).
+    manual review instead of clearing (#76 residual). Pure diacritic
+    Latin ("José") is single-script and screens normally.
     """
     if not isinstance(value, str):
         return False
-    text = unicodedata.normalize("NFKC", value)
-    latin = bool(re.search(r"[a-z]", text.casefold()))
-    return latin and bool(_CYRILLIC_RE.search(text) or _GREEK_RE.search(text))
+    scripts = {
+        _script_of(char)
+        for char in unicodedata.normalize("NFKC", value)
+        if char.isalpha()
+    }
+    return "LATIN" in scripts and not scripts <= {"LATIN", ""}
 
 
 def sanctions_match(entity: str, sanctioned: str, allow_reverse: bool = True) -> bool:

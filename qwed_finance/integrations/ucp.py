@@ -6,6 +6,7 @@ Ensures payment messages are verified before checkout proceeds
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from enum import Enum
+import re
 
 from ..compliance_guard import (
     ComplianceGuard,
@@ -224,8 +225,17 @@ class UCPIntegration:
         # Sanctions screening: an absent list means unscreened, which must
         # never read as approved (#77).
         if not sanctions_list:
-            violations.append(
-                "SANCTIONS UNSCREENED: no sanctions list provided for screening"
+            self._fail_sanctions(
+                violations,
+                receipts,
+                "SANCTIONS UNSCREENED: no sanctions list provided for screening",
+            )
+        elif not self._xml_safe_for_screening(xml_message):
+            self._fail_sanctions(
+                violations,
+                receipts,
+                "SANCTIONS UNSCREENED: document refused for screening "
+                "(DOCTYPE declarations and oversized documents are rejected)",
             )
         else:
             # Extract entities from the parsed document (local names catch
@@ -233,13 +243,22 @@ class UCPIntegration:
             # parties). Raw byte regexes miss char refs, prefixes,
             # comments, and attributes (#77).
             entities = self._extract_xml_entities(xml_message)
+            if not entities:
+                self._fail_sanctions(
+                    violations,
+                    receipts,
+                    "SANCTIONS UNSCREENED: no screenable entities extracted "
+                    "from the document",
+                )
 
             # Check each entity with the shared matcher (bidirectional for
             # names, matching CrossGuard semantics)
             for entity, is_name in entities:
                 if has_mixed_scripts(entity):
-                    violations.append(
-                        f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened"
+                    self._fail_sanctions(
+                        violations,
+                        receipts,
+                        f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened",
                     )
                     continue
                 for sanctioned in sanctions_list:
@@ -260,10 +279,18 @@ class UCPIntegration:
                         receipts.append(receipt2)
                         self.audit_log.log(receipt2)
                         break
-        
-        # Determine status
-        if any("SANCTIONS" in v for v in violations):
+
+        # Determine status: hits and unscreened outcomes block; review-only
+        # outcomes route to manual review (a "SANCTIONS REVIEW" must never
+        # match the BLOCKED branch by substring coincidence).
+        if any(
+            v.startswith(("SANCTIONS HIT", "SANCTIONS UNSCREENED"))
+            for v in violations
+        ):
             status = PaymentStatus.BLOCKED
+            can_proceed = False
+        elif any(v.startswith("SANCTIONS REVIEW") for v in violations):
+            status = PaymentStatus.PENDING_REVIEW
             can_proceed = False
         elif len(violations) == 0:
             status = PaymentStatus.APPROVED
@@ -280,6 +307,40 @@ class UCPIntegration:
             receipts=receipts
         )
     
+    #: Refuse DTD-bearing or oversized documents for screening: Expat
+    #: expands internal entities, so a small request can materialize a
+    #: large string that lands in violations and receipts.
+    _MAX_SCREEN_XML_BYTES = 1_000_000
+    _DOCTYPE_RE = re.compile(r"<!DOCTYPE", re.IGNORECASE)
+
+    @classmethod
+    def _xml_safe_for_screening(cls, xml_message: Any) -> bool:
+        """Refuse documents unsafe to expand for screening."""
+        return (
+            isinstance(xml_message, str)
+            and not cls._DOCTYPE_RE.search(xml_message)
+            and len(xml_message.encode("utf-8")) <= cls._MAX_SCREEN_XML_BYTES
+        )
+
+    def _fail_sanctions(
+        self, violations: list, receipts: list, message: str
+    ) -> None:
+        """Record a sanctions failure in violations, receipts, and audit log.
+
+        One call keeps all three evidence surfaces in agreement — a
+        failure invisible in any one of them is an audit gap.
+        """
+        violations.append(message)
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name="UCP.sanctions_screening",
+            engine=VerificationEngine.REGEX,
+            llm_output=message,
+            verified=False,
+            violations=[message],
+        )
+        receipts.append(receipt)
+        self.audit_log.log(receipt)
+
     @staticmethod
     def _extract_xml_entities(xml_message: str) -> List[tuple]:
         """Extract (text, is_name) pairs from the parsed XML document.
@@ -301,7 +362,9 @@ class UCPIntegration:
             tag = element.tag
             if "}" in tag:
                 tag = tag.rsplit("}", 1)[1]
-            text = (element.text or "").strip()
+            # Full subtree text: a name split across child elements must
+            # screen as a whole, not as its first fragment.
+            text = "".join(element.itertext()).strip()
             if not text:
                 continue
             if tag in name_tags:

@@ -8,7 +8,7 @@ from qwed_finance.compliance_guard import (
     normalize_for_screening,
     sanctions_match,
 )
-from qwed_finance.integrations.ucp import UCPIntegration
+from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
 
 
 def test_normalize_folds_perturbations():
@@ -68,3 +68,89 @@ def test_mixed_script_goes_to_review():
     result = UCPIntegration().verify_iso20022_payment(xml, ["SOMEONE ELSE"])
     assert result.can_proceed is False
     assert any("REVIEW" in v for v in result.violations)
+
+
+def test_mixed_script_returns_pending_review_not_blocked():
+    xml = _doc("<Dbtr><Nm>BАNK</Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["SOMEONE ELSE"])
+    assert result.status == PaymentStatus.PENDING_REVIEW
+
+
+def test_mixed_script_has_rejected_receipt():
+    xml = _doc("<Dbtr><Nm>BАNK</Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["SOMEONE ELSE"])
+    assert any(
+        receipt.verified is False
+        and any("REVIEW" in (v or "") for v in (receipt.violations or []))
+        for receipt in result.receipts
+    )
+
+
+def test_unscreened_has_rejected_receipt():
+    xml = _doc("<Dbtr><Nm>BOB</Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, [])
+    assert any(
+        receipt.verified is False
+        and any("UNSCREENED" in (v or "") for v in (receipt.violations or []))
+        for receipt in result.receipts
+    )
+
+
+def test_doctype_refused_for_screening():
+    xml = (
+        '<!DOCTYPE foo [<!ENTITY x "BANNED ENTITY LTD">]>'
+        "<Document><Dbtr><Nm>&x;</Nm></Dbtr></Document>"
+    )
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED ENTITY LTD"])
+    assert result.can_proceed is False
+    assert any("UNSCREENED" in v for v in result.violations)
+
+
+def test_oversize_document_refused_for_screening():
+    xml = "<Document><Dbtr><Nm>" + "A" * 1_000_001 + "</Nm></Dbtr></Document>"
+    result = UCPIntegration().verify_iso20022_payment(xml, [" NOBODY "])
+    assert result.can_proceed is False
+    assert any("UNSCREENED" in v for v in result.violations)
+
+
+def test_malformed_xml_unscreened_not_approved():
+    result = UCPIntegration().verify_iso20022_payment(
+        "<Document><Dbtr><Nm>BOB</Nm></Dbtr>", ["SOMEONE ELSE"]
+    )
+    assert result.can_proceed is False
+    assert any("UNSCREENED" in v for v in result.violations)
+
+
+def test_adeline_exact_match_blocks():
+    xml = _doc(
+        "<Dbtr><Nm>BOB</Nm><PstlAdr><AdrLine>BANNED BANK PLC</AdrLine></PstlAdr></Dbtr>"
+    )
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED BANK PLC"])
+    assert result.can_proceed is False
+    assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+def test_adeline_fragment_no_reverse_match():
+    xml = _doc(
+        "<Dbtr><Nm>BOB</Nm><PstlAdr><AdrLine>LONDON</AdrLine></PstlAdr></Dbtr>"
+    )
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANK OF LONDON PLC"])
+    london_reviews = [v for v in result.violations if "LONDON" in v and "REVIEW" in v]
+    hit_reviews = [v for v in result.violations if "SANCTIONS HIT" in v]
+    assert hit_reviews == []
+    assert london_reviews == []
+    assert result.status in (PaymentStatus.APPROVED, PaymentStatus.PENDING_REVIEW)
+
+
+def test_unicode_identical_match_blocks():
+    xml = _doc("<Dbtr><Nm>БАНК</Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["БАНК"])
+    assert result.can_proceed is False
+    assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+def test_nested_child_name_screened_whole():
+    xml = _doc("<Dbtr><Nm>BANNED<Sub> ENTITY LTD</Sub></Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED ENTITY LTD"])
+    assert result.can_proceed is False
+    assert any("SANCTIONS HIT" in v for v in result.violations)

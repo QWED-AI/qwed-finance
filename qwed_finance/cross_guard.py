@@ -98,6 +98,17 @@ class CrossGuard:
                     f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened"
                 )
                 guard_results["ComplianceGuard.sanctions"] = False
+
+                review_receipt = ReceiptGenerator.create_receipt(
+                    guard_name="ComplianceGuard.sanctions_check",
+                    engine=VerificationEngine.REGEX,
+                    llm_output=entity,
+                    verified=False,
+                    violations=[f"SANCTIONS REVIEW: '{entity}' requires manual script review"],
+                    metadata={"sanctions_list_size": len(sanctions_list)}
+                )
+                receipts.append(review_receipt)
+                self.audit_log.log(review_receipt)
                 continue
             is_sanctioned = self._check_sanctions(
                 entity, sanctions_list, allow_reverse=(entity in name_set)
