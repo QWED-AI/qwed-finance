@@ -341,6 +341,34 @@ class UCPIntegration:
         receipts.append(receipt)
         self.audit_log.log(receipt)
 
+    #: Element local names that identify the party (bidirectional match).
+    _XML_NAME_TAGS = frozenset({"Nm", "DbtrNm", "CdtrNm"})
+
+    @staticmethod
+    def _element_candidates(element, name_tags: frozenset):
+        """(text, is_name) candidates for one element: both join orders.
+
+        Nodes may split mid-word ("BA"+"NK") or at word boundaries
+        ("BANNED"+"ENTITY LTD"); screening both forms keeps either split
+        verifiable.
+        """
+        tag = element.tag
+        if "}" in tag:
+            tag = tag.rsplit("}", 1)[1]
+        if tag in name_tags:
+            flag = True
+        elif tag == "AdrLine":
+            flag = False
+        else:
+            return
+        raw = "".join(element.itertext())
+        spaced = " ".join(element.itertext())
+        candidates = [raw] if raw == spaced else [raw, spaced]
+        for text in candidates:
+            text = text.strip()
+            if text:
+                yield text, flag
+
     @staticmethod
     def _extract_xml_entities(xml_message: str) -> List[tuple]:
         """Extract (text, is_name) pairs from the parsed XML document.
@@ -352,7 +380,6 @@ class UCPIntegration:
         """
         import xml.etree.ElementTree as ET
 
-        name_tags = {"Nm", "DbtrNm", "CdtrNm"}
         entities: List[tuple] = []
         seen = set()
         try:
@@ -360,29 +387,14 @@ class UCPIntegration:
         except ET.ParseError:
             return entities
         for element in root.iter():
-            tag = element.tag
-            if "}" in tag:
-                tag = tag.rsplit("}", 1)[1]
-            # Both join orders: nodes may split mid-word ("BA"+"NK") or
-            # at word boundaries ("BANNED"+"ENTITY LTD"). Screening both
-            # forms keeps either split verifiable; normalization collapses
-            # the spacing difference for whole-word splits. Candidates
-            # that normalize identically are one screened value, not two:
-            # duplicate violations/receipts for a single party inflate
-            # the audit trail into phantom multi-hits.
-            raw = "".join(element.itertext())
-            spaced = " ".join(element.itertext())
-            candidates = [raw] if raw == spaced else [raw, spaced]
-            for text in candidates:
-                text = text.strip()
-                if not text:
-                    continue
-                if tag in name_tags:
-                    flag = True
-                elif tag == "AdrLine":
-                    flag = False
-                else:
-                    continue
+            for text, flag in UCPIntegration._element_candidates(
+                element, UCPIntegration._XML_NAME_TAGS
+            ):
+                # Candidates that normalize identically are one screened
+                # value, not two: duplicate violations/receipts for a
+                # single party inflate the audit trail into phantom
+                # multi-hits. Normalization collapses the spacing
+                # difference for whole-word splits.
                 key = (normalize_for_screening(text), flag)
                 if key in seen:
                     continue
