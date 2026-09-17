@@ -6,8 +6,14 @@ Ensures payment messages are verified before checkout proceeds
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from enum import Enum
+import re
 
-from ..compliance_guard import ComplianceGuard
+from ..compliance_guard import (
+    ComplianceGuard,
+    has_mixed_scripts,
+    normalize_for_screening,
+    sanctions_match,
+)
 from ..message_guard import MessageGuard, MessageType
 from ..query_guard import QueryGuard
 from ..cross_guard import CrossGuard
@@ -217,25 +223,53 @@ class UCPIntegration:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Sanctions screening if list provided
-        if sanctions_list:
-            # Extract entities from XML
-            import re
-            entities = []
-            
-            # Look for name elements
-            name_patterns = [r'<Nm>([^<]+)</Nm>', r'<DbtrNm>([^<]+)</DbtrNm>', 
-                           r'<CdtrNm>([^<]+)</CdtrNm>']
-            for pattern in name_patterns:
-                matches = re.findall(pattern, xml_message)
-                entities.extend(matches)
-            
-            # Check each entity
-            for entity in entities:
+        # Sanctions screening: an absent list means unscreened, which must
+        # never read as approved (#77).
+        if not sanctions_list:
+            self._fail_sanctions(
+                violations,
+                receipts,
+                "SANCTIONS UNSCREENED: no sanctions list provided for screening",
+            )
+        elif not self._xml_safe_for_screening(xml_message):
+            self._fail_sanctions(
+                violations,
+                receipts,
+                "SANCTIONS UNSCREENED: document refused for screening "
+                "(DOCTYPE declarations and oversized documents are rejected)",
+            )
+        else:
+            # Extract entities from the parsed document (local names catch
+            # namespaced/aliased elements; AdrLine covers address-only
+            # parties). Raw byte regexes miss char refs, prefixes,
+            # comments, and attributes (#77).
+            entities = self._extract_xml_entities(xml_message)
+            if not entities:
+                self._fail_sanctions(
+                    violations,
+                    receipts,
+                    "SANCTIONS UNSCREENED: no screenable entities extracted "
+                    "from the document",
+                )
+
+            # Check each entity with the shared matcher (bidirectional for
+            # names, matching CrossGuard semantics)
+            for entity, is_name in entities:
+                if has_mixed_scripts(entity):
+                    self._fail_sanctions(
+                        violations,
+                        receipts,
+                        f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened",
+                    )
+                    continue
                 for sanctioned in sanctions_list:
-                    if sanctioned.lower() in entity.lower():
-                        violations.append(f"SANCTIONS HIT: {entity} matches {sanctioned}")
-                        
+                    if sanctions_match(
+                        entity, sanctioned, allow_reverse=is_name
+                    ):
+                        violations.append(
+                            f"SANCTIONS HIT: {entity} matches {sanctioned}"
+                        )
+
                         receipt2 = ReceiptGenerator.create_receipt(
                             guard_name="UCP.sanctions_screening",
                             engine=VerificationEngine.REGEX,
@@ -245,15 +279,23 @@ class UCPIntegration:
                         )
                         receipts.append(receipt2)
                         self.audit_log.log(receipt2)
-        
-        # Determine status
-        if any("SANCTIONS" in v for v in violations):
+                        break
+
+        # Determine status: hits and unscreened outcomes block; review-only
+        # outcomes route to manual review (a "SANCTIONS REVIEW" must never
+        # match the BLOCKED branch by substring coincidence).
+        if any(
+            v.startswith(("SANCTIONS HIT", "SANCTIONS UNSCREENED"))
+            for v in violations
+        ):
             status = PaymentStatus.BLOCKED
             can_proceed = False
         elif len(violations) == 0:
             status = PaymentStatus.APPROVED
             can_proceed = True
         else:
+            # Anything else — including SANCTIONS REVIEW — routes to
+            # manual review, never approval.
             status = PaymentStatus.PENDING_REVIEW
             can_proceed = False
         
@@ -265,6 +307,107 @@ class UCPIntegration:
             receipts=receipts
         )
     
+    #: Refuse DTD-bearing or oversized documents for screening: Expat
+    #: expands internal entities, so a small request can materialize a
+    #: large string that lands in violations and receipts.
+    _MAX_SCREEN_XML_BYTES = 1_000_000
+    _DOCTYPE_RE = re.compile(r"<!DOCTYPE", re.IGNORECASE)
+
+    @classmethod
+    def _xml_safe_for_screening(cls, xml_message: Any) -> bool:
+        """Refuse documents unsafe to expand for screening."""
+        return (
+            isinstance(xml_message, str)
+            and not cls._DOCTYPE_RE.search(xml_message)
+            and len(xml_message.encode("utf-8")) <= cls._MAX_SCREEN_XML_BYTES
+        )
+
+    def _fail_sanctions(
+        self, violations: list, receipts: list, message: str
+    ) -> None:
+        """Record a sanctions failure in violations, receipts, and audit log.
+
+        One call keeps all three evidence surfaces in agreement — a
+        failure invisible in any one of them is an audit gap.
+        """
+        violations.append(message)
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name="UCP.sanctions_screening",
+            engine=VerificationEngine.REGEX,
+            llm_output=message,
+            verified=False,
+            violations=[message],
+        )
+        receipts.append(receipt)
+        self.audit_log.log(receipt)
+
+    #: Element local names that identify the party (bidirectional match).
+    _XML_NAME_TAGS = frozenset({"Nm", "DbtrNm", "CdtrNm"})
+
+    @staticmethod
+    def _element_candidates(element, name_tags: frozenset):
+        """(text, is_name) candidates for one element: both join orders.
+
+        Nodes may split mid-word ("BA"+"NK") or at word boundaries
+        ("BANNED"+"ENTITY LTD"); screening both forms keeps either split
+        verifiable. Attribute values on screened elements are screened
+        too — an attribute-only sanctioned name must not evade — but
+        always forward-only: metadata such as xml:lang="en" must never
+        condemn via reverse coincidence.
+        """
+        tag = element.tag
+        if "}" in tag:
+            tag = tag.rsplit("}", 1)[1]
+        if tag in name_tags:
+            flag = True
+        elif tag == "AdrLine":
+            flag = False
+        else:
+            return
+        raw = "".join(element.itertext())
+        spaced = " ".join(element.itertext())
+        candidates = [raw] if raw == spaced else [raw, spaced]
+        for text in candidates:
+            text = text.strip()
+            if text:
+                yield text, flag
+        for value in element.attrib.values():
+            if isinstance(value, str) and value.strip():
+                yield value.strip(), False
+
+    @staticmethod
+    def _extract_xml_entities(xml_message: str) -> List[tuple]:
+        """Extract (text, is_name) pairs from the parsed XML document.
+
+        Local-name matching catches namespaced/aliased elements, char
+        references, comments, and attributes that raw byte regexes miss;
+        AdrLine covers address-only parties. Name elements (Nm and friends)
+        match bidirectionally; address lines match forward-only (#77).
+        """
+        import xml.etree.ElementTree as ET
+
+        entities: List[tuple] = []
+        seen = set()
+        try:
+            root = ET.fromstring(xml_message)
+        except ET.ParseError:
+            return entities
+        for element in root.iter():
+            for text, flag in UCPIntegration._element_candidates(
+                element, UCPIntegration._XML_NAME_TAGS
+            ):
+                # Candidates that normalize identically are one screened
+                # value, not two: duplicate violations/receipts for a
+                # single party inflate the audit trail into phantom
+                # multi-hits. Normalization collapses the spacing
+                # difference for whole-word splits.
+                key = (normalize_for_screening(text), flag)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entities.append((text, flag))
+        return entities
+
     def create_ucp_middleware(self):
         """
         Create middleware function compatible with qwed-ucp.

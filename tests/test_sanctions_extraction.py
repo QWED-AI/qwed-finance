@@ -156,6 +156,21 @@ def test_split_structured_name_reconstructed():
     assert result.passed is False
 
 
+def test_mixed_script_review_has_receipt():
+    message = _mt(
+        ":50K:/111\nALICE",
+        ":59:/222\nBАNK",
+        ":71A:OUR",
+    )
+    result = CrossGuard().verify_swift_with_sanctions(message, ["SOMEONE ELSE"])
+    assert result.passed is False
+    assert any(
+        "REVIEW" in (v or "")
+        for receipt in result.receipts
+        for v in (receipt.violations or [])
+    )
+
+
 def test_single_structured_component_stripped_for_matching():
     entities = CrossGuard()._extract_entities_from_mt(":59F:/1\n1/IRAN BANK\n-}")
     assert "IRAN BANK" in entities
@@ -178,3 +193,17 @@ def test_short_party_name_still_matches():
     )
     result = CrossGuard().verify_swift_with_sanctions(message, ["BANK OF IRAN"])
     assert result.passed is False
+
+def test_empty_sanctions_list_fails_closed():
+    message = _mt(":50K:/111\nALICE", ":59:/222\nBOB", ":71A:OUR")
+    result = CrossGuard().verify_swift_with_sanctions(message, [])
+    assert result.passed is False
+    assert any("UNSCREENED" in v for v in result.violations)
+
+
+def test_empty_list_produces_no_review_noise():
+    message = _mt(":50K:/111\nALICE", ":59:/222\nBАNK", ":71A:OUR")
+    result = CrossGuard().verify_swift_with_sanctions(message, [])
+    assert result.passed is False
+    assert [v for v in result.violations if "REVIEW" in v] == []
+    assert any("UNSCREENED" in v for v in result.violations)

@@ -5,7 +5,11 @@ Enables multi-layer verification (e.g., scan SWIFT message for sanctioned entiti
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-from .compliance_guard import ComplianceGuard
+from .compliance_guard import (
+    ComplianceGuard,
+    has_mixed_scripts,
+    sanctions_match,
+)
 from .message_guard import MessageGuard, MessageType
 from .query_guard import QueryGuard
 from .models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
@@ -38,6 +42,9 @@ class CrossGuard:
         self.query = QueryGuard()
         self.audit_log = AuditLog()
     
+    #: Guard name stamped on sanctions-screening receipts.
+    _SANCTIONS_GUARD_NAME = "ComplianceGuard.sanctions_check"
+
     # ==================== SWIFT + Sanctions ====================
     
     def verify_swift_with_sanctions(
@@ -62,7 +69,26 @@ class CrossGuard:
         violations = []
         guard_results = {}
         receipts = []
-        
+
+        # An absent sanctions list means unscreened: fail closed instead
+        # of skipping the loop and approving (UCP parity).
+        if not sanctions_list:
+            violations.append(
+                "SANCTIONS UNSCREENED: no sanctions list provided for screening"
+            )
+            guard_results["ComplianceGuard.sanctions"] = False
+
+            unscreened_receipt = ReceiptGenerator.create_receipt(
+                guard_name=self._SANCTIONS_GUARD_NAME,
+                engine=VerificationEngine.REGEX,
+                llm_output=mt_string,
+                verified=False,
+                violations=["No sanctions list provided; payment cannot be screened"],
+                metadata={"sanctions_list_size": 0}
+            )
+            receipts.append(unscreened_receipt)
+            self.audit_log.log(unscreened_receipt)
+
         # Step 1: Validate SWIFT format
         from .message_guard import SwiftMtType
         msg_result = self.message.verify_swift_mt(mt_string, SwiftMtType.MT103)
@@ -81,12 +107,36 @@ class CrossGuard:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Step 2: Extract entity names from MT message
-        entities = self._extract_entities_from_mt(mt_string)
-        name_set = set(self._extract_name_entities(mt_string))
+        # Step 2: Extract entity names from MT message. Skipped entirely
+        # when the list is absent: screening nothing must not produce
+        # REVIEW noise next to the UNSCREENED verdict (UCP parity).
+        entities = []
+        name_set = set()
+        if sanctions_list:
+            entities = self._extract_entities_from_mt(mt_string)
+            name_set = set(self._extract_name_entities(mt_string))
 
         # Step 3: Check each entity against sanctions list
         for entity in entities:
+            if has_mixed_scripts(entity):
+                # Unscreenable by substring logic: fail safe to review,
+                # never clear (#76 residual).
+                violations.append(
+                    f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened"
+                )
+                guard_results["ComplianceGuard.sanctions"] = False
+
+                review_receipt = ReceiptGenerator.create_receipt(
+                    guard_name=self._SANCTIONS_GUARD_NAME,
+                    engine=VerificationEngine.REGEX,
+                    llm_output=entity,
+                    verified=False,
+                    violations=[f"SANCTIONS REVIEW: '{entity}' requires manual script review"],
+                    metadata={"sanctions_list_size": len(sanctions_list)}
+                )
+                receipts.append(review_receipt)
+                self.audit_log.log(review_receipt)
+                continue
             is_sanctioned = self._check_sanctions(
                 entity, sanctions_list, allow_reverse=(entity in name_set)
             )
@@ -96,7 +146,7 @@ class CrossGuard:
                 guard_results["ComplianceGuard.sanctions"] = False
                 
                 receipt2 = ReceiptGenerator.create_receipt(
-                    guard_name="ComplianceGuard.sanctions_check",
+                    guard_name=self._SANCTIONS_GUARD_NAME,
                     engine=VerificationEngine.REGEX,
                     llm_output=entity,
                     verified=False,
@@ -257,21 +307,15 @@ class CrossGuard:
     ) -> bool:
         """Check if entity matches any sanctioned name (fuzzy match).
 
-        Forward direction (sanctioned name inside the entity) always
-        applies. The reverse direction (entity inside a sanctioned name)
-        applies only to name-provenance entities: short continuation
-        fragments such as address cities ("LONDON" vs "BANK OF LONDON
-        PLC") would otherwise reject legitimate payments, while a party
-        actually named by a short string ("IRAN" vs "BANK OF IRAN")
-        still matches. Full name/address disambiguation is tracked in
-        #76/#77/#78.
+        Shared normalized matcher (see compliance_guard.sanctions_match):
+        NFKC/ignorable/punctuation folding on both sides, forward
+        containment always, reverse and token-set equality only for
+        name-provenance entities. Mixed-script names fail safe to manual
+        review at the call site. Full name/address disambiguation and
+        alias data are tracked in #76/#77/#78.
         """
-        entity_lower = entity.lower()
         for sanctioned in sanctions_list:
-            sanctioned_lower = sanctioned.lower()
-            if sanctioned_lower in entity_lower:
-                return True
-            if allow_reverse and entity_lower in sanctioned_lower:
+            if sanctions_match(entity, sanctioned, allow_reverse=allow_reverse):
                 return True
         return False
     

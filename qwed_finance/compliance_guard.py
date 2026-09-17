@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from enum import Enum
 import math
+import re
 import unicodedata
 
 
@@ -70,6 +71,92 @@ def validate_amount(value: Any, field: str = "amount") -> int | float:
     ):
         raise ValueError(f"{field} must be a finite number >= 0")
     return value
+
+
+def _is_ignorable(char: str) -> bool:
+    """Characters stripped before punctuation folding.
+
+    Unicode format controls (Cf: zero-width spaces, bidi controls and
+    isolates, BOM, soft hyphen, Arabic letter mark, tags block) plus the
+    non-spacing marks NFKC leaves behind (combining grapheme joiner
+    U+034F, variation selectors U+FE00-FE0F, Mongolian FVS U+180B-180F,
+    tag characters U+E0000-E0FFF). An embedded selector must never
+    split a name into unmatched fragments.
+    """
+    if unicodedata.category(char) == "Cf":
+        return True
+    return (
+        char == "\u034F"
+        or "\uFE00" <= char <= "\uFE0F"
+        or "\U000E0000" <= char <= "\U000E0FFF"
+        or "\u180B" <= char <= "\u180F"
+    )
+
+
+def normalize_for_screening(value: Any) -> str:
+    """Canonicalize a party string for sanctions containment checks.
+
+    NFKC fold (fullwidth/homoglyph forms), ignorable strip (zero-width,
+    bidi controls/isolates, BOM, Arabic letter mark), punctuation →
+    space, casefold, whitespace collapse. Unicode letters are preserved
+    (``str.isalnum`` is script-aware): identical non-Latin names match
+    instead of both collapsing to empty. Applied to BOTH sides of every
+    containment check, so one-char perturbations (extra spaces, hyphens,
+    dots, full-width, bidi isolates) cannot break the match (#76).
+    """
+    if not isinstance(value, str):
+        return ""
+    text = unicodedata.normalize("NFKC", value)
+    text = "".join(char for char in text if not _is_ignorable(char))
+    text = "".join(char if char.isalnum() else " " for char in text.casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _script_of(char: str) -> str:
+    """Unicode script family of a letter, by character-name prefix."""
+    return unicodedata.name(char, "").split(" ")[0]
+
+
+def has_mixed_scripts(value: str) -> bool:
+    """Detect Latin mixed with a non-Latin letter script.
+
+    Such names cannot be substring-screened reliably: a Cyrillic 'а'
+    never equals Latin 'a' even after NFKC. Callers must fail safe to
+    manual review instead of clearing (#76 residual). Pure diacritic
+    Latin ("José") is single-script and screens normally.
+    """
+    if not isinstance(value, str):
+        return False
+    scripts = {
+        _script_of(char)
+        for char in unicodedata.normalize("NFKC", value)
+        if char.isalpha()
+    }
+    return "LATIN" in scripts and not scripts <= {"LATIN", ""}
+
+
+def sanctions_match(entity: str, sanctioned: str, allow_reverse: bool = True) -> bool:
+    """Shared party-name matcher: normalized containment either direction
+    plus order-insensitive token-set equality.
+
+    Token-set equality covers reversed/comma names ("KOREA, NORTH" vs
+    "NORTH KOREA") that containment misses in both directions, without
+    an alias table. The reverse direction (and token equality over
+    fragments) applies only when the caller vouches the entity identifies
+    the party — address/narrative fragments match forward-only, so city
+    names cannot condemn via substring coincidence. Transliterations,
+    abbreviations, and true aliases remain a documented residual
+    requiring alias-structured data (#78).
+    """
+    left = normalize_for_screening(entity)
+    right = normalize_for_screening(sanctioned)
+    if not left or not right:
+        return False
+    if right in left:
+        return True
+    if allow_reverse and left in right:
+        return True
+    return allow_reverse and sorted(left.split()) == sorted(right.split())
 
 
 class RiskLevel(Enum):
