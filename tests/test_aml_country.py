@@ -117,6 +117,35 @@ def test_ucp_explicit_country_still_clears():
     assert result.can_proceed is True
 
 
+def test_ucp_token_rejects_malformed_amounts():
+    from qwed_finance.integrations.ucp import PaymentStatus as UCPStatus
+
+    for amount in ["100", None, float("nan"), float("inf"), -5, True]:
+        integration = UCPIntegration()
+        before = len(integration.audit_log.receipts)
+        result = integration.verify_payment_token(
+            {
+                "amount": amount,
+                "currency": "USD",
+                "customer_country": "US",
+                "kyc_verified": True,
+            }
+        )
+        assert result.status == UCPStatus.BLOCKED
+        assert result.can_proceed is False
+        assert any("Invalid amount" in v for v in result.violations)
+        amount_receipts = [
+            receipt
+            for receipt in result.receipts
+            if receipt.guard_name == "UCP.verify_amount"
+            and receipt.verified is False
+        ]
+        assert len(amount_receipts) == 1
+        assert any("Invalid amount" in v for v in amount_receipts[0].violations)
+        assert len(integration.audit_log.receipts) == before + 1
+        assert integration.audit_log.receipts[-1] is amount_receipts[0]
+
+
 @pytest.mark.parametrize("amount", [float("nan"), -5, float("inf"), True, None, "100"])
 def test_tool_malformed_amount_rejected(amount):
     result = OpenResponsesIntegration().handle_tool_call(
@@ -157,7 +186,7 @@ def test_tool_rejected_amount_logs_receipt():
     assert "finite number >= 0" in integration.audit_log.receipts[-1].violations[0]
 
 
-def test_ucp_nan_amount_pending_review():
+def test_ucp_nan_amount_blocked_at_entry():
     result = UCPIntegration().verify_payment_token(
         {
             "amount": float("nan"),
@@ -167,4 +196,4 @@ def test_ucp_nan_amount_pending_review():
         }
     )
     assert result.can_proceed is False
-    assert result.status == PaymentStatus.PENDING_REVIEW
+    assert result.status == PaymentStatus.BLOCKED
