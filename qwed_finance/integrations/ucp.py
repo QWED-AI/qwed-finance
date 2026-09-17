@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
-from ..compliance_guard import ComplianceGuard
+from ..compliance_guard import (
+    ComplianceGuard,
+    has_mixed_scripts,
+    sanctions_match,
+)
 from ..message_guard import MessageGuard, MessageType
 from ..query_guard import QueryGuard
 from ..cross_guard import CrossGuard
@@ -217,25 +221,35 @@ class UCPIntegration:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Sanctions screening if list provided
-        if sanctions_list:
-            # Extract entities from XML
-            import re
-            entities = []
-            
-            # Look for name elements
-            name_patterns = [r'<Nm>([^<]+)</Nm>', r'<DbtrNm>([^<]+)</DbtrNm>', 
-                           r'<CdtrNm>([^<]+)</CdtrNm>']
-            for pattern in name_patterns:
-                matches = re.findall(pattern, xml_message)
-                entities.extend(matches)
-            
-            # Check each entity
-            for entity in entities:
+        # Sanctions screening: an absent list means unscreened, which must
+        # never read as approved (#77).
+        if not sanctions_list:
+            violations.append(
+                "SANCTIONS UNSCREENED: no sanctions list provided for screening"
+            )
+        else:
+            # Extract entities from the parsed document (local names catch
+            # namespaced/aliased elements; AdrLine covers address-only
+            # parties). Raw byte regexes miss char refs, prefixes,
+            # comments, and attributes (#77).
+            entities = self._extract_xml_entities(xml_message)
+
+            # Check each entity with the shared matcher (bidirectional for
+            # names, matching CrossGuard semantics)
+            for entity, is_name in entities:
+                if has_mixed_scripts(entity):
+                    violations.append(
+                        f"SANCTIONS REVIEW: '{entity}' mixes scripts and cannot be screened"
+                    )
+                    continue
                 for sanctioned in sanctions_list:
-                    if sanctioned.lower() in entity.lower():
-                        violations.append(f"SANCTIONS HIT: {entity} matches {sanctioned}")
-                        
+                    if sanctions_match(
+                        entity, sanctioned, allow_reverse=is_name
+                    ):
+                        violations.append(
+                            f"SANCTIONS HIT: {entity} matches {sanctioned}"
+                        )
+
                         receipt2 = ReceiptGenerator.create_receipt(
                             guard_name="UCP.sanctions_screening",
                             engine=VerificationEngine.REGEX,
@@ -245,6 +259,7 @@ class UCPIntegration:
                         )
                         receipts.append(receipt2)
                         self.audit_log.log(receipt2)
+                        break
         
         # Determine status
         if any("SANCTIONS" in v for v in violations):
@@ -265,6 +280,36 @@ class UCPIntegration:
             receipts=receipts
         )
     
+    @staticmethod
+    def _extract_xml_entities(xml_message: str) -> List[tuple]:
+        """Extract (text, is_name) pairs from the parsed XML document.
+
+        Local-name matching catches namespaced/aliased elements, char
+        references, comments, and attributes that raw byte regexes miss;
+        AdrLine covers address-only parties. Name elements (Nm and friends)
+        match bidirectionally; address lines match forward-only (#77).
+        """
+        import xml.etree.ElementTree as ET
+
+        name_tags = {"Nm", "DbtrNm", "CdtrNm"}
+        entities: List[tuple] = []
+        try:
+            root = ET.fromstring(xml_message)
+        except ET.ParseError:
+            return entities
+        for element in root.iter():
+            tag = element.tag
+            if "}" in tag:
+                tag = tag.rsplit("}", 1)[1]
+            text = (element.text or "").strip()
+            if not text:
+                continue
+            if tag in name_tags:
+                entities.append((text, True))
+            elif tag == "AdrLine":
+                entities.append((text, False))
+        return entities
+
     def create_ucp_middleware(self):
         """
         Create middleware function compatible with qwed-ucp.

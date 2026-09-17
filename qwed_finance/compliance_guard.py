@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from enum import Enum
 import math
+import re
 import unicodedata
 
 
@@ -70,6 +71,67 @@ def validate_amount(value: Any, field: str = "amount") -> int | float:
     ):
         raise ValueError(f"{field} must be a finite number >= 0")
     return value
+
+
+_IGNORABLE_CHARS_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04ff]")
+_GREEK_RE = re.compile(r"[\u0370-\u03ff]")
+
+
+def normalize_for_screening(value: Any) -> str:
+    """Canonicalize a party string for sanctions containment checks.
+
+    NFKC fold (fullwidth/homoglyph forms), ignorable strip (zero-width,
+    bidi controls, BOM), punctuation → space, casefold, whitespace
+    collapse. Applied to BOTH sides of every containment check, so
+    one-char perturbations (extra spaces, hyphens, dots, full-width)
+    cannot break the match (#76).
+    """
+    if not isinstance(value, str):
+        return ""
+    text = unicodedata.normalize("NFKC", value)
+    text = _IGNORABLE_CHARS_RE.sub("", text)
+    text = _NON_ALNUM_RE.sub(" ", text.casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def has_mixed_scripts(value: str) -> bool:
+    """Detect Latin mixed with Cyrillic/Greek look-alike scripts.
+
+    Such names cannot be substring-screened at all: a Cyrillic 'а'
+    never equals Latin 'a' even after NFKC. Callers must fail safe to
+    manual review instead of clearing (#76 residual).
+    """
+    if not isinstance(value, str):
+        return False
+    text = unicodedata.normalize("NFKC", value)
+    latin = bool(re.search(r"[a-z]", text.casefold()))
+    return latin and bool(_CYRILLIC_RE.search(text) or _GREEK_RE.search(text))
+
+
+def sanctions_match(entity: str, sanctioned: str, allow_reverse: bool = True) -> bool:
+    """Shared party-name matcher: normalized containment either direction
+    plus order-insensitive token-set equality.
+
+    Token-set equality covers reversed/comma names ("KOREA, NORTH" vs
+    "NORTH KOREA") that containment misses in both directions, without
+    an alias table. The reverse direction (and token equality over
+    fragments) applies only when the caller vouches the entity identifies
+    the party — address/narrative fragments match forward-only, so city
+    names cannot condemn via substring coincidence. Transliterations,
+    abbreviations, and true aliases remain a documented residual
+    requiring alias-structured data (#78).
+    """
+    left = normalize_for_screening(entity)
+    right = normalize_for_screening(sanctioned)
+    if not left or not right:
+        return False
+    if right in left:
+        return True
+    if allow_reverse and left in right:
+        return True
+    return allow_reverse and sorted(left.split()) == sorted(right.split())
 
 
 class RiskLevel(Enum):
