@@ -6,7 +6,7 @@ All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP, getcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, getcontext
 from typing import List, Optional, Tuple
 from enum import Enum
 
@@ -289,15 +289,27 @@ class RiskGuard:
         Returns:
             RiskResult with verification status
         """
-        llm_val = Decimal(llm_sortino.strip())
-        
-        if not downside_returns:
-            # No downside returns = infinite Sortino (perfect)
+        try:
+            llm_val = Decimal(llm_sortino.strip())
+        except (InvalidOperation, AttributeError, ValueError):
+            # Fail closed: an unparseable claim cannot be verified, and a
+            # verifier must never raise on caller input.
             return RiskResult(
-                verified=True,
+                verified=False,
+                llm_value=str(llm_sortino),
+                computed_value="UNVERIFIABLE (unparseable claim)",
+                formula_used="Sortino = (Rp - Rt) / downside_deviation"
+            )
+
+        if not downside_returns:
+            # No downside observations: there is no recomputation to compare
+            # the claim against, so no claim can verify (#43). An "infinite"
+            # Sortino here would endorse literally any number.
+            return RiskResult(
+                verified=False,
                 llm_value=llm_sortino,
-                computed_value="∞ (no downside)",
-                formula_used="Sortino = (Rp - Rt) / σ_downside"
+                computed_value="UNVERIFIABLE (no downside observations)",
+                formula_used="Sortino = (Rp - Rt) / downside_deviation"
             )
         
         # Convert to Decimal
@@ -321,13 +333,14 @@ class RiskGuard:
         if downside_deviation > 0:
             computed_sortino = excess_return / downside_deviation
         else:
-            # Near-infinite Sortino
-            verified = llm_val > 10  # High LLM value expected
+            # Zero downside deviation makes the ratio undefined: no claim
+            # can verify against it. The old `llm_val > 10` heuristic
+            # endorsed any large number without recomputation (#43).
             return RiskResult(
-                verified=verified,
+                verified=False,
                 llm_value=f"{llm_val}",
-                computed_value="Very High (low downside)",
-                formula_used="Sortino = (Rp - Rt) / σ_downside"
+                computed_value="UNVERIFIABLE (zero downside deviation)",
+                formula_used="Sortino = (Rp - Rt) / downside_deviation"
             )
         
         computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
