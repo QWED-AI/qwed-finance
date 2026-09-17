@@ -15,6 +15,9 @@ from ..derivatives_guard import DerivativesGuard, OptionType
 from ..models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
 
 
+_AML_GUARD_NAME = "OpenResponses.check_aml_compliance"
+
+
 class ToolCallStatus(Enum):
     """Status of a verified tool call"""
     APPROVED = "approved"      # Verified against LLM claim and passed
@@ -338,7 +341,7 @@ class OpenResponsesIntegration:
             # Clear (#71). The message is a fixed string: exception text
             # must never reach API clients (information disclosure).
             receipt = ReceiptGenerator.create_receipt(
-                guard_name="OpenResponses.check_aml_compliance",
+                guard_name=_AML_GUARD_NAME,
                 engine=VerificationEngine.Z3,
                 llm_output=str(args),
                 verified=False,
@@ -365,7 +368,7 @@ class OpenResponsesIntegration:
             country_code = normalize_country_code(country_code)
         except ValueError as exc:
             receipt = ReceiptGenerator.create_receipt(
-                guard_name="OpenResponses.check_aml_compliance",
+                guard_name=_AML_GUARD_NAME,
                 engine=VerificationEngine.Z3,
                 llm_output=str(args),
                 verified=False,
@@ -395,7 +398,7 @@ class OpenResponsesIntegration:
         needs_flagging = amount >= threshold or is_high_risk
         
         receipt = ReceiptGenerator.create_receipt(
-            guard_name="OpenResponses.check_aml_compliance",
+            guard_name=_AML_GUARD_NAME,
             engine=VerificationEngine.Z3,
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim
