@@ -6,7 +6,7 @@ All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, getcontext
+from decimal import Decimal, DecimalException, InvalidOperation, ROUND_HALF_UP, getcontext
 from typing import List, Optional, Tuple
 from enum import Enum
 
@@ -356,23 +356,33 @@ class RiskGuard:
                 formula_used=self.SORTINO_FORMULA
             )
         
-        computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        
-        # Compare
-        diff = abs(computed_sortino_q - llm_val)
-        verified = diff <= Decimal("0.1")  # Within 0.1 tolerance
-        
-        return RiskResult(
-            verified=verified,
-            llm_value=f"{llm_val}",
-            computed_value=f"{computed_sortino_q}",
-            difference=f"{diff.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}" if not verified else None,
-            formula_used="Sortino = (Rp - Rt) / σ_downside",
-            details={
-                "downside_deviation": f"{(downside_deviation * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%",
-                "observations_below_target": n
-            }
-        )
+        try:
+            computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+            # Compare
+            diff = abs(computed_sortino_q - llm_val)
+            verified = diff <= Decimal("0.1")  # Within 0.1 tolerance
+
+            return RiskResult(
+                verified=verified,
+                llm_value=f"{llm_val}",
+                computed_value=f"{computed_sortino_q}",
+                difference=f"{diff.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}" if not verified else None,
+                formula_used=self.SORTINO_FORMULA,
+                details={
+                    "downside_deviation": f"{(downside_deviation * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%",
+                    "observations_below_target": n
+                }
+            )
+        except DecimalException:
+            # Extreme finite claims (e.g. 1e999999) overflow the Decimal
+            # context during comparison/formatting: verdict, never raise.
+            return RiskResult(
+                verified=False,
+                llm_value=f"{llm_val}",
+                computed_value="UNVERIFIABLE (claim outside verifiable range)",
+                formula_used=self.SORTINO_FORMULA
+            )
     
     def verify_max_drawdown(
         self,
