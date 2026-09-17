@@ -121,7 +121,9 @@ def test_ucp_token_rejects_malformed_amounts():
     from qwed_finance.integrations.ucp import PaymentStatus as UCPStatus
 
     for amount in ["100", None, float("nan"), float("inf"), -5, True]:
-        result = UCPIntegration().verify_payment_token(
+        integration = UCPIntegration()
+        before = len(integration.audit_log.receipts)
+        result = integration.verify_payment_token(
             {
                 "amount": amount,
                 "currency": "USD",
@@ -131,6 +133,17 @@ def test_ucp_token_rejects_malformed_amounts():
         )
         assert result.status == UCPStatus.BLOCKED
         assert result.can_proceed is False
+        assert any("Invalid amount" in v for v in result.violations)
+        amount_receipts = [
+            receipt
+            for receipt in result.receipts
+            if receipt.guard_name == "UCP.verify_amount"
+            and receipt.verified is False
+        ]
+        assert len(amount_receipts) == 1
+        assert any("Invalid amount" in v for v in amount_receipts[0].violations)
+        assert len(integration.audit_log.receipts) == before + 1
+        assert integration.audit_log.receipts[-1] is amount_receipts[0]
 
 
 @pytest.mark.parametrize("amount", [float("nan"), -5, float("inf"), True, None, "100"])
