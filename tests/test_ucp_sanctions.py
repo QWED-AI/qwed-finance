@@ -179,3 +179,16 @@ def test_midword_node_split_still_matches():
     result = UCPIntegration().verify_iso20022_payment(xml, ["BANK"])
     assert result.can_proceed is False
     assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+def test_attribute_only_sanctioned_name_screened():
+    xml = _doc('<Dbtr><Nm nickname="BANNED ENTITY LTD">BOB</Nm></Dbtr>')
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED ENTITY LTD"])
+    assert result.can_proceed is False
+    assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+def test_metadata_attributes_do_not_false_positive():
+    xml = _doc('<Dbtr xml:lang="en"><Nm>BOB</Nm></Dbtr>')
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BENTLEY MOTORS"])
+    assert not any("SANCTIONS HIT" in v for v in result.violations)

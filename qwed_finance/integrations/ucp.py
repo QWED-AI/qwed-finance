@@ -350,7 +350,10 @@ class UCPIntegration:
 
         Nodes may split mid-word ("BA"+"NK") or at word boundaries
         ("BANNED"+"ENTITY LTD"); screening both forms keeps either split
-        verifiable.
+        verifiable. Attribute values on screened elements are screened
+        too — an attribute-only sanctioned name must not evade — but
+        always forward-only: metadata such as xml:lang="en" must never
+        condemn via reverse coincidence.
         """
         tag = element.tag
         if "}" in tag:
@@ -368,6 +371,9 @@ class UCPIntegration:
             text = text.strip()
             if text:
                 yield text, flag
+        for value in element.attrib.values():
+            if isinstance(value, str) and value.strip():
+                yield value.strip(), False
 
     @staticmethod
     def _extract_xml_entities(xml_message: str) -> List[tuple]:
