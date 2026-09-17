@@ -266,6 +266,9 @@ class RiskGuard:
             }
         )
     
+    #: Canonical formula label for Sortino verdicts.
+    SORTINO_FORMULA = "Sortino = (Rp - Rt) / downside_deviation"
+
     def verify_sortino_ratio(
         self,
         portfolio_return: float,
@@ -298,7 +301,17 @@ class RiskGuard:
                 verified=False,
                 llm_value=str(llm_sortino),
                 computed_value="UNVERIFIABLE (unparseable claim)",
-                formula_used="Sortino = (Rp - Rt) / downside_deviation"
+                formula_used=self.SORTINO_FORMULA
+            )
+        if not llm_val.is_finite():
+            # Decimal accepts NaN/sNaN/Infinity at parse time; each would
+            # crash the comparison or formatting below with InvalidOperation
+            # instead of verdicting. Reject up front (Greptile P1).
+            return RiskResult(
+                verified=False,
+                llm_value=str(llm_sortino),
+                computed_value="UNVERIFIABLE (non-finite claim)",
+                formula_used=self.SORTINO_FORMULA
             )
 
         if not downside_returns:
@@ -309,7 +322,7 @@ class RiskGuard:
                 verified=False,
                 llm_value=llm_sortino,
                 computed_value="UNVERIFIABLE (no downside observations)",
-                formula_used="Sortino = (Rp - Rt) / downside_deviation"
+                formula_used=self.SORTINO_FORMULA
             )
         
         # Convert to Decimal
@@ -340,7 +353,7 @@ class RiskGuard:
                 verified=False,
                 llm_value=f"{llm_val}",
                 computed_value="UNVERIFIABLE (zero downside deviation)",
-                formula_used="Sortino = (Rp - Rt) / downside_deviation"
+                formula_used=self.SORTINO_FORMULA
             )
         
         computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)

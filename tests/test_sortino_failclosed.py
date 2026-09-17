@@ -48,6 +48,18 @@ def test_unparseable_claim_verdicts_without_raising():
     assert result.verified is False
 
 
+@pytest.mark.parametrize("claim", ["nan", "sNaN", "Infinity", "-Infinity"])
+def test_nonfinite_claim_verdicts_without_raising(claim):
+    result = _guard().verify_sortino_ratio(
+        portfolio_return=0.15,
+        target_return=0.06,
+        downside_returns=[0.01, 0.02, -0.01],
+        llm_sortino=claim,
+    )
+    assert result.verified is False
+    assert "UNVERIFIABLE" in result.computed_value
+
+
 def test_matching_claim_still_verifies():
     result = _guard().verify_sortino_ratio(
         portfolio_return=0.15,
