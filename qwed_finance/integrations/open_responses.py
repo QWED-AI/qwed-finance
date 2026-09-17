@@ -9,10 +9,13 @@ from enum import Enum
 import json
 
 from ..finance_verifier import FinanceVerifier
-from ..compliance_guard import ComplianceGuard, normalize_country_code
+from ..compliance_guard import ComplianceGuard, normalize_country_code, validate_amount
 from ..calendar_guard import CalendarGuard
 from ..derivatives_guard import DerivativesGuard, OptionType
 from ..models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
+
+
+_AML_GUARD_NAME = "OpenResponses.check_aml_compliance"
 
 
 class ToolCallStatus(Enum):
@@ -330,7 +333,30 @@ class OpenResponsesIntegration:
     
     def _verify_aml(self, args: Dict[str, Any]) -> VerifiedToolCall:
         """Compute AML check — delegates to ComplianceGuard for consistent rules."""
-        amount = args.get("amount", 0)
+        try:
+            amount = validate_amount(args.get("amount"), "amount")
+        except ValueError:
+            # Fail closed: malformed amounts (NaN/negative/Infinity/bool/
+            # missing) must reject with a retry message, never compute
+            # Clear (#71). The message is a fixed string: exception text
+            # must never reach API clients (information disclosure).
+            receipt = ReceiptGenerator.create_receipt(
+                guard_name=_AML_GUARD_NAME,
+                engine=VerificationEngine.Z3,
+                llm_output=str(args),
+                verified=False,
+                computed_value="rejected_malformed_amount",
+                violations=["Amount must be a finite number >= 0"],
+            )
+            self.audit_log.log(receipt)
+            return VerifiedToolCall(
+                status=ToolCallStatus.REJECTED,
+                tool_name="check_aml_compliance",
+                original_args=args,
+                error="Invalid amount: must be a finite number >= 0.",
+                retry_message="Provide amount as a finite number >= 0.",
+                receipt=receipt,
+            )
         # No default: a missing country_code must fail closed through
         # normalize_country_code (which rejects None) instead of
         # clearing as low-risk "US".
@@ -342,7 +368,7 @@ class OpenResponsesIntegration:
             country_code = normalize_country_code(country_code)
         except ValueError as exc:
             receipt = ReceiptGenerator.create_receipt(
-                guard_name="OpenResponses.check_aml_compliance",
+                guard_name=_AML_GUARD_NAME,
                 engine=VerificationEngine.Z3,
                 llm_output=str(args),
                 verified=False,
@@ -372,7 +398,7 @@ class OpenResponsesIntegration:
         needs_flagging = amount >= threshold or is_high_risk
         
         receipt = ReceiptGenerator.create_receipt(
-            guard_name="OpenResponses.check_aml_compliance",
+            guard_name=_AML_GUARD_NAME,
             engine=VerificationEngine.Z3,
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim

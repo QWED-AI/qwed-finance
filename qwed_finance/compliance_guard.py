@@ -6,6 +6,7 @@ Handles KYC/AML rules with formal boolean logic proofs
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from enum import Enum
+import math
 import unicodedata
 
 
@@ -49,6 +50,26 @@ def normalize_country_code(value: Any) -> str:
             f"country_code {value!r} is not evaluable as ISO 3166-1 alpha-2"
         )
     return normalized
+
+
+def validate_amount(value: Any, field: str = "amount") -> int | float:
+    """Enforce a declared monetary constraint: finite number >= 0.
+
+    NaN compares false against every threshold (reads as below-threshold),
+    negatives are not valid money facts, Infinity distorts the comparison,
+    and bool is not a numeric type (``True == 1`` quirk). The finiteness
+    check applies to floats only: ``math.isfinite`` raises OverflowError
+    on huge ints, which are arbitrary-precision and compare exactly.
+    Missing (None) is rejected — amounts are required, never defaulted.
+    """
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or (isinstance(value, float) and not math.isfinite(value))
+        or value < 0
+    ):
+        raise ValueError(f"{field} must be a finite number >= 0")
+    return value
 
 
 class RiskLevel(Enum):
@@ -133,6 +154,19 @@ class ComplianceGuard:
             ComplianceResult with verification status
         """
         threshold = self.aml_thresholds.get(jurisdiction, self.aml_thresholds["DEFAULT"])
+        try:
+            amount = validate_amount(amount)
+        except ValueError:
+            # Fail closed: malformed amounts must force a flag, never clear
+            # (NaN reads as below-threshold; the UCP token path forwards
+            # raw amounts here).
+            return ComplianceResult(
+                compliant=False,
+                rule_violated="AML_AMOUNT_UNVERIFIABLE",
+                expected_action="FLAG",
+                llm_action="FLAG" if llm_flagged else "APPROVE",
+                proof="Transaction amount could not be evaluated as a finite non-negative number — blocked pending review",
+            )
         try:
             country_code = normalize_country_code(country_code)
         except ValueError as exc:

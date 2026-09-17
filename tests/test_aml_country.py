@@ -9,7 +9,10 @@ unassigned codes, and missing values.
 import pytest
 
 from qwed_finance.compliance_guard import ComplianceGuard, normalize_country_code
-from qwed_finance.integrations.open_responses import OpenResponsesIntegration
+from qwed_finance.integrations.open_responses import (
+    OpenResponsesIntegration,
+    ToolCallStatus,
+)
 from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
 
 
@@ -112,3 +115,56 @@ def test_ucp_explicit_country_still_clears():
         }
     )
     assert result.can_proceed is True
+
+
+@pytest.mark.parametrize("amount", [float("nan"), -5, float("inf"), True, None, "100"])
+def test_tool_malformed_amount_rejected(amount):
+    result = OpenResponsesIntegration().handle_tool_call(
+        "check_aml_compliance", {"amount": amount, "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.REJECTED
+    assert "finite number >= 0" in result.error
+
+
+@pytest.mark.parametrize(
+    "amount,flagged", [(0, False), (5000, False), (15000, True)]
+)
+def test_tool_legit_amounts_compute(amount, flagged):
+    result = OpenResponsesIntegration().handle_tool_call(
+        "check_aml_compliance", {"amount": amount, "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.COMPUTED
+    assert result.result["needs_flagging"] is flagged
+
+
+def test_tool_oversized_int_flags_without_error():
+    result = OpenResponsesIntegration().handle_tool_call(
+        "check_aml_compliance", {"amount": 10**400, "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.COMPUTED
+    assert result.result["needs_flagging"] is True
+
+
+def test_tool_rejected_amount_logs_receipt():
+    integration = OpenResponsesIntegration()
+    before = len(integration.audit_log.receipts)
+    result = integration.handle_tool_call(
+        "check_aml_compliance", {"amount": float("nan"), "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.REJECTED
+    assert len(integration.audit_log.receipts) == before + 1
+    assert "finite number >= 0" in result.error
+    assert "finite number >= 0" in integration.audit_log.receipts[-1].violations[0]
+
+
+def test_ucp_nan_amount_pending_review():
+    result = UCPIntegration().verify_payment_token(
+        {
+            "amount": float("nan"),
+            "currency": "USD",
+            "customer_country": "US",
+            "kyc_verified": True,
+        }
+    )
+    assert result.can_proceed is False
+    assert result.status == PaymentStatus.PENDING_REVIEW
