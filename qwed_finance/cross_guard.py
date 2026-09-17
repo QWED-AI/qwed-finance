@@ -66,7 +66,26 @@ class CrossGuard:
         violations = []
         guard_results = {}
         receipts = []
-        
+
+        # An absent sanctions list means unscreened: fail closed instead
+        # of skipping the loop and approving (UCP parity).
+        if not sanctions_list:
+            violations.append(
+                "SANCTIONS UNSCREENED: no sanctions list provided for screening"
+            )
+            guard_results["ComplianceGuard.sanctions"] = False
+
+            unscreened_receipt = ReceiptGenerator.create_receipt(
+                guard_name="ComplianceGuard.sanctions_check",
+                engine=VerificationEngine.REGEX,
+                llm_output=mt_string,
+                verified=False,
+                violations=["No sanctions list provided; payment cannot be screened"],
+                metadata={"sanctions_list_size": 0}
+            )
+            receipts.append(unscreened_receipt)
+            self.audit_log.log(unscreened_receipt)
+
         # Step 1: Validate SWIFT format
         from .message_guard import SwiftMtType
         msg_result = self.message.verify_swift_mt(mt_string, SwiftMtType.MT103)

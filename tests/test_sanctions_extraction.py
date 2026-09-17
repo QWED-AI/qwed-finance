@@ -193,3 +193,9 @@ def test_short_party_name_still_matches():
     )
     result = CrossGuard().verify_swift_with_sanctions(message, ["BANK OF IRAN"])
     assert result.passed is False
+
+def test_empty_sanctions_list_fails_closed():
+    message = _mt(":50K:/111\nALICE", ":59:/222\nBOB", ":71A:OUR")
+    result = CrossGuard().verify_swift_with_sanctions(message, [])
+    assert result.passed is False
+    assert any("UNSCREENED" in v for v in result.violations)

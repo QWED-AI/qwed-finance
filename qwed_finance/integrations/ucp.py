@@ -361,15 +361,21 @@ class UCPIntegration:
             tag = element.tag
             if "}" in tag:
                 tag = tag.rsplit("}", 1)[1]
-            # Full subtree text: a name split across child elements must
-            # screen as a whole, not as its first fragment.
-            text = "".join(element.itertext()).strip()
-            if not text:
-                continue
-            if tag in name_tags:
-                entities.append((text, True))
-            elif tag == "AdrLine":
-                entities.append((text, False))
+            # Both join orders: nodes may split mid-word ("BA"+"NK") or
+            # at word boundaries ("BANNED"+"ENTITY LTD"). Screening both
+            # forms keeps either split verifiable; normalization collapses
+            # the spacing difference for whole-word splits.
+            raw = "".join(element.itertext())
+            spaced = " ".join(element.itertext())
+            candidates = [raw] if raw == spaced else [raw, spaced]
+            for text in candidates:
+                text = text.strip()
+                if not text:
+                    continue
+                if tag in name_tags:
+                    entities.append((text, True))
+                elif tag == "AdrLine":
+                    entities.append((text, False))
         return entities
 
     def create_ucp_middleware(self):

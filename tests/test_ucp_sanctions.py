@@ -156,3 +156,14 @@ def test_nested_child_name_screened_whole():
     result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED ENTITY LTD"])
     assert result.can_proceed is False
     assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+def test_combining_grapheme_joiner_stripped():
+    assert sanctions_match("BA͏NK", "BANK") is True
+
+
+def test_midword_node_split_still_matches():
+    xml = _doc("<Dbtr><Nm>BA<Sub>NK</Sub></Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANK"])
+    assert result.can_proceed is False
+    assert any("SANCTIONS HIT" in v for v in result.violations)

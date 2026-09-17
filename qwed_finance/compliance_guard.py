@@ -78,14 +78,16 @@ def _is_ignorable(char: str) -> bool:
 
     Unicode format controls (Cf: zero-width spaces, bidi controls and
     isolates, BOM, soft hyphen, Arabic letter mark, tags block) plus the
-    non-spacing marks NFKC leaves behind (variation selectors U+FE00–FE0F,
-    Mongolian FVS U+180B–180F, tag characters U+E0000–U+E0FFF). An
-    embedded selector must never split a name into unmatched fragments.
+    non-spacing marks NFKC leaves behind (combining grapheme joiner
+    U+034F, variation selectors U+FE00-FE0F, Mongolian FVS U+180B-180F,
+    tag characters U+E0000-E0FFF). An embedded selector must never
+    split a name into unmatched fragments.
     """
     if unicodedata.category(char) == "Cf":
         return True
     return (
-        "\uFE00" <= char <= "\uFE0F"
+        char == "\u034F"
+        or "\uFE00" <= char <= "\uFE0F"
         or "\U000E0000" <= char <= "\U000E0FFF"
         or "\u180B" <= char <= "\u180F"
     )
