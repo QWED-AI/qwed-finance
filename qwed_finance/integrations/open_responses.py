@@ -7,31 +7,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Union
 from enum import Enum
 import json
-import math
 
 from ..finance_verifier import FinanceVerifier
-from ..compliance_guard import ComplianceGuard, normalize_country_code
+from ..compliance_guard import ComplianceGuard, normalize_country_code, validate_amount
 from ..calendar_guard import CalendarGuard
 from ..derivatives_guard import DerivativesGuard, OptionType
 from ..models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
-
-
-def _validate_amount(value: Any, field: str = "amount") -> Union[int, float]:
-    """Enforce the declared tool-arg constraint: finite number >= 0.
-
-    NaN compares false against every threshold (reads as below-threshold),
-    negatives are not valid money facts, Infinity distorts the comparison,
-    and bool is not a numeric type (``True == 1`` quirk). Missing
-    (None) is rejected — the declared schema marks amount required.
-    """
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        raise ValueError(f"{field} must be a finite number >= 0")
-    return value
 
 
 class ToolCallStatus(Enum):
@@ -350,17 +331,28 @@ class OpenResponsesIntegration:
     def _verify_aml(self, args: Dict[str, Any]) -> VerifiedToolCall:
         """Compute AML check — delegates to ComplianceGuard for consistent rules."""
         try:
-            amount = _validate_amount(args.get("amount"), "amount")
-        except ValueError as exc:
+            amount = validate_amount(args.get("amount"), "amount")
+        except ValueError:
             # Fail closed: malformed amounts (NaN/negative/Infinity/bool/
             # missing) must reject with a retry message, never compute
-            # Clear (#71).
+            # Clear (#71). The message is a fixed string: exception text
+            # must never reach API clients (information disclosure).
+            receipt = ReceiptGenerator.create_receipt(
+                guard_name="OpenResponses.check_aml_compliance",
+                engine=VerificationEngine.Z3,
+                llm_output=str(args),
+                verified=False,
+                computed_value="rejected_malformed_amount",
+                violations=["Amount must be a finite number >= 0"],
+            )
+            self.audit_log.log(receipt)
             return VerifiedToolCall(
                 status=ToolCallStatus.REJECTED,
                 tool_name="check_aml_compliance",
                 original_args=args,
-                error=str(exc),
+                error="Invalid amount: must be a finite number >= 0.",
                 retry_message="Provide amount as a finite number >= 0.",
+                receipt=receipt,
             )
         # No default: a missing country_code must fail closed through
         # normalize_country_code (which rejects None) instead of

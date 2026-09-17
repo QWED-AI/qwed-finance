@@ -135,3 +135,36 @@ def test_tool_legit_amounts_compute(amount, flagged):
     )
     assert result.status == ToolCallStatus.COMPUTED
     assert result.result["needs_flagging"] is flagged
+
+
+def test_tool_oversized_int_flags_without_error():
+    result = OpenResponsesIntegration().handle_tool_call(
+        "check_aml_compliance", {"amount": 10**400, "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.COMPUTED
+    assert result.result["needs_flagging"] is True
+
+
+def test_tool_rejected_amount_logs_receipt():
+    integration = OpenResponsesIntegration()
+    before = len(integration.audit_log.receipts)
+    result = integration.handle_tool_call(
+        "check_aml_compliance", {"amount": float("nan"), "country_code": "US"}
+    )
+    assert result.status == ToolCallStatus.REJECTED
+    assert len(integration.audit_log.receipts) == before + 1
+    assert "finite number >= 0" in result.error
+    assert "finite number >= 0" in integration.audit_log.receipts[-1].violations[0]
+
+
+def test_ucp_nan_amount_pending_review():
+    result = UCPIntegration().verify_payment_token(
+        {
+            "amount": float("nan"),
+            "currency": "USD",
+            "customer_country": "US",
+            "kyc_verified": True,
+        }
+    )
+    assert result.can_proceed is False
+    assert result.status == PaymentStatus.PENDING_REVIEW
