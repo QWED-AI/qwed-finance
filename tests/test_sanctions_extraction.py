@@ -199,3 +199,11 @@ def test_empty_sanctions_list_fails_closed():
     result = CrossGuard().verify_swift_with_sanctions(message, [])
     assert result.passed is False
     assert any("UNSCREENED" in v for v in result.violations)
+
+
+def test_empty_list_produces_no_review_noise():
+    message = _mt(":50K:/111\nALICE", ":59:/222\nBАNK", ":71A:OUR")
+    result = CrossGuard().verify_swift_with_sanctions(message, [])
+    assert result.passed is False
+    assert [v for v in result.violations if "REVIEW" in v] == []
+    assert any("UNSCREENED" in v for v in result.violations)

@@ -42,6 +42,9 @@ class CrossGuard:
         self.query = QueryGuard()
         self.audit_log = AuditLog()
     
+    #: Guard name stamped on sanctions-screening receipts.
+    _SANCTIONS_GUARD_NAME = "ComplianceGuard.sanctions_check"
+
     # ==================== SWIFT + Sanctions ====================
     
     def verify_swift_with_sanctions(
@@ -76,7 +79,7 @@ class CrossGuard:
             guard_results["ComplianceGuard.sanctions"] = False
 
             unscreened_receipt = ReceiptGenerator.create_receipt(
-                guard_name="ComplianceGuard.sanctions_check",
+                guard_name=self._SANCTIONS_GUARD_NAME,
                 engine=VerificationEngine.REGEX,
                 llm_output=mt_string,
                 verified=False,
@@ -104,9 +107,14 @@ class CrossGuard:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Step 2: Extract entity names from MT message
-        entities = self._extract_entities_from_mt(mt_string)
-        name_set = set(self._extract_name_entities(mt_string))
+        # Step 2: Extract entity names from MT message. Skipped entirely
+        # when the list is absent: screening nothing must not produce
+        # REVIEW noise next to the UNSCREENED verdict (UCP parity).
+        entities = []
+        name_set = set()
+        if sanctions_list:
+            entities = self._extract_entities_from_mt(mt_string)
+            name_set = set(self._extract_name_entities(mt_string))
 
         # Step 3: Check each entity against sanctions list
         for entity in entities:
@@ -119,7 +127,7 @@ class CrossGuard:
                 guard_results["ComplianceGuard.sanctions"] = False
 
                 review_receipt = ReceiptGenerator.create_receipt(
-                    guard_name="ComplianceGuard.sanctions_check",
+                    guard_name=self._SANCTIONS_GUARD_NAME,
                     engine=VerificationEngine.REGEX,
                     llm_output=entity,
                     verified=False,
@@ -138,7 +146,7 @@ class CrossGuard:
                 guard_results["ComplianceGuard.sanctions"] = False
                 
                 receipt2 = ReceiptGenerator.create_receipt(
-                    guard_name="ComplianceGuard.sanctions_check",
+                    guard_name=self._SANCTIONS_GUARD_NAME,
                     engine=VerificationEngine.REGEX,
                     llm_output=entity,
                     verified=False,

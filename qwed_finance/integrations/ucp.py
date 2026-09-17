@@ -11,6 +11,7 @@ import re
 from ..compliance_guard import (
     ComplianceGuard,
     has_mixed_scripts,
+    normalize_for_screening,
     sanctions_match,
 )
 from ..message_guard import MessageGuard, MessageType
@@ -353,6 +354,7 @@ class UCPIntegration:
 
         name_tags = {"Nm", "DbtrNm", "CdtrNm"}
         entities: List[tuple] = []
+        seen = set()
         try:
             root = ET.fromstring(xml_message)
         except ET.ParseError:
@@ -364,7 +366,10 @@ class UCPIntegration:
             # Both join orders: nodes may split mid-word ("BA"+"NK") or
             # at word boundaries ("BANNED"+"ENTITY LTD"). Screening both
             # forms keeps either split verifiable; normalization collapses
-            # the spacing difference for whole-word splits.
+            # the spacing difference for whole-word splits. Candidates
+            # that normalize identically are one screened value, not two:
+            # duplicate violations/receipts for a single party inflate
+            # the audit trail into phantom multi-hits.
             raw = "".join(element.itertext())
             spaced = " ".join(element.itertext())
             candidates = [raw] if raw == spaced else [raw, spaced]
@@ -373,9 +378,16 @@ class UCPIntegration:
                 if not text:
                     continue
                 if tag in name_tags:
-                    entities.append((text, True))
+                    flag = True
                 elif tag == "AdrLine":
-                    entities.append((text, False))
+                    flag = False
+                else:
+                    continue
+                key = (normalize_for_screening(text), flag)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entities.append((text, flag))
         return entities
 
     def create_ucp_middleware(self):

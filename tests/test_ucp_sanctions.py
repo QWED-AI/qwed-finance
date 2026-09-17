@@ -158,6 +158,18 @@ def test_nested_child_name_screened_whole():
     assert any("SANCTIONS HIT" in v for v in result.violations)
 
 
+def test_nested_name_produces_single_hit():
+    xml = _doc("<Dbtr><Nm>BANNED<Sub> ENTITY LTD</Sub></Nm></Dbtr>")
+    result = UCPIntegration().verify_iso20022_payment(xml, ["BANNED ENTITY LTD"])
+    hits = [v for v in result.violations if "SANCTIONS HIT" in v]
+    receipts = [
+        r for r in result.receipts
+        if r.guard_name == "UCP.sanctions_screening" and r.verified is False
+    ]
+    assert len(hits) == 1
+    assert len(receipts) == 1
+
+
 def test_combining_grapheme_joiner_stripped():
     assert sanctions_match("BA͏NK", "BANK") is True
 
