@@ -158,12 +158,7 @@ class CrossGuard:
             return entities
 
         for tag, value in self._iter_party_blocks(mt_string):
-            for line in value.splitlines():
-                text = line.strip()
-                # Skip block-4 trailers ("-}" or "-}{5:...}" framing):
-                # message framing, not an entity.
-                if not text or text.startswith("-}"):
-                    continue
+            for text in self._content_lines(value):
                 if text not in entities:
                     entities.append(text)
             # Structured blocks: also screen the stripped name components
@@ -175,14 +170,15 @@ class CrossGuard:
         return entities
 
     @staticmethod
-    def _structured_names(tag: str, value: str) -> List[str]:
-        """Stripped ``1/`` name components plus their joined form."""
-        if tag not in ("50F", "59F"):
-            return []
-        parts = CrossGuard._structured_name_parts(tag, value)
-        if not parts:
-            return []
-        return parts + ([" ".join(parts)] if len(parts) > 1 else [])
+    def _content_lines(value: str):
+        """Yield stripped content lines, skipping blanks and trailers."""
+        for line in value.splitlines():
+            text = line.strip()
+            # Skip block-4 trailers ("-}" or "-}{5:...}" framing):
+            # message framing, not an entity.
+            if not text or text.startswith("-}"):
+                continue
+            yield text
 
     # Party tags that identify (rather than describe) the party: their
     # name lines match bidirectionally. Narrative/free-text carriers
@@ -222,6 +218,15 @@ class CrossGuard:
             return []
         return parts + ([" ".join(parts)] if len(parts) > 1 else [])
 
+    @staticmethod
+    def _first_name_line(value: str) -> Optional[str]:
+        """First content line that names (rather than accounts for) the party."""
+        for text in CrossGuard._content_lines(value):
+            if text.startswith("/"):
+                continue
+            return text
+        return None
+
     def _extract_name_entities(self, mt_string: str) -> List[str]:
         """Entity strings that identify the party (not describe it).
 
@@ -233,19 +238,15 @@ class CrossGuard:
         names: List[str] = []
         for tag, value in self._iter_party_blocks(mt_string):
             if tag in ("50F", "59F"):
-                for name in self._structured_names(tag, value):
-                    if name not in names:
-                        names.append(name)
+                candidates = self._structured_names(tag, value)
+            elif tag in ("70", "72"):
                 continue
-            if tag in ("70", "72"):
-                continue
-            for line in value.splitlines():
-                text = line.strip()
-                if not text or text.startswith("-}") or text.startswith("/"):
-                    continue
-                if text not in names:
-                    names.append(text)
-                break
+            else:
+                first = self._first_name_line(value)
+                candidates = [first] if first is not None else []
+            for name in candidates:
+                if name not in names:
+                    names.append(name)
         return names
     
     def _check_sanctions(

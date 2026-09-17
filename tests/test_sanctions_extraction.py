@@ -56,16 +56,23 @@ def test_non_whitelist_institution_fields_screened():
     message = _mt(
         ":50K:/111\nALICE",
         ":59:/222\nBOB",
+        ":51A:SENDING BANQUE",
         ":52D:BANNED BANK PLC",
         ":56D:BANNED INTERMEDIARY",
         ":57D:BANNED ACCOUNTS WITH",
+        ":58A:BANNED BENEFICIARY BANK",
         ":71A:OUR",
     )
-    result = CrossGuard().verify_swift_with_sanctions(
-        message, ["BANNED BANK PLC", "BANNED INTERMEDIARY", "BANNED ACCOUNTS WITH"]
-    )
+    sanctioned = [
+        "SENDING BANQUE",
+        "BANNED BANK PLC",
+        "BANNED INTERMEDIARY",
+        "BANNED ACCOUNTS WITH",
+        "BANNED BENEFICIARY BANK",
+    ]
+    result = CrossGuard().verify_swift_with_sanctions(message, sanctioned)
     assert result.passed is False
-    assert len([v for v in result.violations if "SANCTIONS HIT" in v]) == 3
+    assert len([v for v in result.violations if "SANCTIONS HIT" in v]) == 5
 
 
 def test_structured_59f_name_screened():
