@@ -14,7 +14,9 @@ from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
 def test_normalize_folds_perturbations():
     assert normalize_for_screening("BANK-OF  LONDON.") == "bank of london"
     assert normalize_for_screening("ＢＡＮＫ") == "bank"
-    assert normalize_for_screening("BA\u200bNK") == "bank"
+    assert normalize_for_screening("BA​NK") == "bank"
+    assert normalize_for_screening("BA⁠NK") == "bank"
+    assert normalize_for_screening("BA\U0000FE0FNK") == "bank"
     assert normalize_for_screening(42) == ""
 
 

@@ -73,9 +73,22 @@ def validate_amount(value: Any, field: str = "amount") -> int | float:
     return value
 
 
-_IGNORABLE_CHARS_RE = re.compile(
-    "[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u061c]"
-)
+def _is_ignorable(char: str) -> bool:
+    """Characters stripped before punctuation folding.
+
+    Unicode format controls (Cf: zero-width spaces, bidi controls and
+    isolates, BOM, soft hyphen, Arabic letter mark, tags block) plus the
+    non-spacing marks NFKC leaves behind (variation selectors U+FE00–FE0F,
+    Mongolian FVS U+180B–180F, tag characters U+E0000–U+E0FFF). An
+    embedded selector must never split a name into unmatched fragments.
+    """
+    if unicodedata.category(char) == "Cf":
+        return True
+    return (
+        "\uFE00" <= char <= "\uFE0F"
+        or "\U000E0000" <= char <= "\U000E0FFF"
+        or "\u180B" <= char <= "\u180F"
+    )
 
 
 def normalize_for_screening(value: Any) -> str:
@@ -92,7 +105,7 @@ def normalize_for_screening(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     text = unicodedata.normalize("NFKC", value)
-    text = _IGNORABLE_CHARS_RE.sub("", text)
+    text = "".join(char for char in text if not _is_ignorable(char))
     text = "".join(char if char.isalnum() else " " for char in text.casefold())
     return re.sub(r"\s+", " ", text).strip()
 
@@ -100,12 +113,6 @@ def normalize_for_screening(value: Any) -> str:
 def _script_of(char: str) -> str:
     """Unicode script family of a letter, by character-name prefix."""
     return unicodedata.name(char, "").split(" ")[0]
-
-
-_NON_LATIN_SCRIPTS = frozenset({
-    "CYRILLIC", "GREEK", "ARABIC", "HEBREW", "ARMENIAN", "GEORGIAN",
-    "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "DEVANAGARI",
-})
 
 
 def has_mixed_scripts(value: str) -> bool:

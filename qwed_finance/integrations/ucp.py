@@ -289,13 +289,12 @@ class UCPIntegration:
         ):
             status = PaymentStatus.BLOCKED
             can_proceed = False
-        elif any(v.startswith("SANCTIONS REVIEW") for v in violations):
-            status = PaymentStatus.PENDING_REVIEW
-            can_proceed = False
         elif len(violations) == 0:
             status = PaymentStatus.APPROVED
             can_proceed = True
         else:
+            # Anything else — including SANCTIONS REVIEW — routes to
+            # manual review, never approval.
             status = PaymentStatus.PENDING_REVIEW
             can_proceed = False
         
