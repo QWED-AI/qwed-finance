@@ -13,8 +13,8 @@ from .compliance_guard import (
 from .message_guard import MessageGuard, MessageType
 from .query_guard import QueryGuard
 from .models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
+import math
 import re
-
 
 @dataclass
 class CrossGuardResult:
@@ -364,10 +364,42 @@ class CrossGuard:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Step 2: Extract values and check business rules
-        amount = self._extract_xml_value(xml_string, "IntrBkSttlmAmt")
+        # Step 2: Extract values and check business rules. Every
+        # IntrBkSttlmAmt occurrence is collected (first-match reads let
+        # multi-transaction and comment-decoy amounts through), and any
+        # missing/unparseable/non-finite/ambiguous amount is an explicit
+        # False verdict, never a silent skip (#66).
+        raw_amounts = self._extract_xml_amounts(xml_string, "IntrBkSttlmAmt")
         currency = self._extract_xml_attribute(xml_string, "IntrBkSttlmAmt", "Ccy")
-        
+        parsed_amounts = []
+        amounts_unverifiable = False
+        amount = None
+        for raw in raw_amounts:
+            try:
+                value = float(raw.replace(",", ""))
+            except ValueError:
+                amounts_unverifiable = True
+                continue
+            if not math.isfinite(value):
+                amounts_unverifiable = True
+                continue
+            parsed_amounts.append(value)
+
+        if not raw_amounts:
+            violations.append("Missing IntrBkSttlmAmt: amount cannot be verified")
+            guard_results["BusinessRule.max_amount"] = False
+            guard_results["BusinessRule.min_amount"] = False
+        elif amounts_unverifiable or len(set(parsed_amounts)) != 1:
+            violations.append(
+                "Ambiguous IntrBkSttlmAmt amounts: every occurrence must "
+                "parse to one finite agreed value"
+            )
+            guard_results["BusinessRule.max_amount"] = False
+            guard_results["BusinessRule.min_amount"] = False
+            amount = None
+        else:
+            amount = parsed_amounts[0]
+
         # Check amount constraints
         if amount is not None:
             if "max_amount" in business_rules and amount > business_rules["max_amount"]:
@@ -399,6 +431,15 @@ class CrossGuard:
             receipts=receipts
         )
     
+    def _extract_xml_amounts(self, xml: str, element: str) -> List[str]:
+        """Extract the raw text of EVERY matching element (findall).
+
+        First-match reads let multi-transaction and comment-decoy amounts
+        through unverified; callers must require all occurrences to agree.
+        """
+        pattern = rf'<{element}[^>]*>([^<]+)</{element}>'
+        return [match.group(1) for match in re.finditer(pattern, xml)]
+
     def _extract_xml_value(self, xml: str, element: str) -> Optional[float]:
         """Extract numeric value from XML element"""
         pattern = rf'<{element}[^>]*>([^<]+)</{element}>'
