@@ -6,7 +6,7 @@ All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP, getcontext
+from decimal import Decimal, DecimalException, InvalidOperation, ROUND_HALF_UP, getcontext
 from typing import List, Optional, Tuple
 from enum import Enum
 
@@ -266,6 +266,9 @@ class RiskGuard:
             }
         )
     
+    #: Canonical formula label for Sortino verdicts.
+    SORTINO_FORMULA = "Sortino = (Rp - Rt) / downside_deviation"
+
     def verify_sortino_ratio(
         self,
         portfolio_return: float,
@@ -289,15 +292,37 @@ class RiskGuard:
         Returns:
             RiskResult with verification status
         """
-        llm_val = Decimal(llm_sortino.strip())
-        
-        if not downside_returns:
-            # No downside returns = infinite Sortino (perfect)
+        try:
+            llm_val = Decimal(llm_sortino.strip())
+        except (InvalidOperation, AttributeError, ValueError):
+            # Fail closed: an unparseable claim cannot be verified, and a
+            # verifier must never raise on caller input.
             return RiskResult(
-                verified=True,
+                verified=False,
+                llm_value=str(llm_sortino),
+                computed_value="UNVERIFIABLE (unparseable claim)",
+                formula_used=self.SORTINO_FORMULA
+            )
+        if not llm_val.is_finite():
+            # Decimal accepts NaN/sNaN/Infinity at parse time; each would
+            # crash the comparison or formatting below with InvalidOperation
+            # instead of verdicting. Reject up front (Greptile P1).
+            return RiskResult(
+                verified=False,
+                llm_value=str(llm_sortino),
+                computed_value="UNVERIFIABLE (non-finite claim)",
+                formula_used=self.SORTINO_FORMULA
+            )
+
+        if not downside_returns:
+            # No downside observations: there is no recomputation to compare
+            # the claim against, so no claim can verify (#43). An "infinite"
+            # Sortino here would endorse literally any number.
+            return RiskResult(
+                verified=False,
                 llm_value=llm_sortino,
-                computed_value="∞ (no downside)",
-                formula_used="Sortino = (Rp - Rt) / σ_downside"
+                computed_value="UNVERIFIABLE (no downside observations)",
+                formula_used=self.SORTINO_FORMULA
             )
         
         # Convert to Decimal
@@ -321,32 +346,43 @@ class RiskGuard:
         if downside_deviation > 0:
             computed_sortino = excess_return / downside_deviation
         else:
-            # Near-infinite Sortino
-            verified = llm_val > 10  # High LLM value expected
+            # Zero downside deviation makes the ratio undefined: no claim
+            # can verify against it. The old `llm_val > 10` heuristic
+            # endorsed any large number without recomputation (#43).
+            return RiskResult(
+                verified=False,
+                llm_value=f"{llm_val}",
+                computed_value="UNVERIFIABLE (zero downside deviation)",
+                formula_used=self.SORTINO_FORMULA
+            )
+        
+        try:
+            computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+            # Compare
+            diff = abs(computed_sortino_q - llm_val)
+            verified = diff <= Decimal("0.1")  # Within 0.1 tolerance
+
             return RiskResult(
                 verified=verified,
                 llm_value=f"{llm_val}",
-                computed_value="Very High (low downside)",
-                formula_used="Sortino = (Rp - Rt) / σ_downside"
+                computed_value=f"{computed_sortino_q}",
+                difference=f"{diff.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}" if not verified else None,
+                formula_used=self.SORTINO_FORMULA,
+                details={
+                    "downside_deviation": f"{(downside_deviation * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%",
+                    "observations_below_target": n
+                }
             )
-        
-        computed_sortino_q = computed_sortino.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        
-        # Compare
-        diff = abs(computed_sortino_q - llm_val)
-        verified = diff <= Decimal("0.1")  # Within 0.1 tolerance
-        
-        return RiskResult(
-            verified=verified,
-            llm_value=f"{llm_val}",
-            computed_value=f"{computed_sortino_q}",
-            difference=f"{diff.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}" if not verified else None,
-            formula_used="Sortino = (Rp - Rt) / σ_downside",
-            details={
-                "downside_deviation": f"{(downside_deviation * 100).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%",
-                "observations_below_target": n
-            }
-        )
+        except DecimalException:
+            # Extreme finite claims (e.g. 1e999999) overflow the Decimal
+            # context during comparison/formatting: verdict, never raise.
+            return RiskResult(
+                verified=False,
+                llm_value=f"{llm_val}",
+                computed_value="UNVERIFIABLE (claim outside verifiable range)",
+                formula_used=self.SORTINO_FORMULA
+            )
     
     def verify_max_drawdown(
         self,
