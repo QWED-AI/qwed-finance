@@ -110,10 +110,39 @@ def test_mixed_currencies_fail_closed():
     assert result.passed is False
 
 
+def test_allowed_ccy_plus_missing_ccy_fails_closed():
+    xml = (
+        '<Document><IntrBkSttlmAmt Ccy="USD">100</IntrBkSttlmAmt>'
+        "<IntrBkSttlmAmt>100</IntrBkSttlmAmt></Document>"
+    )
+    result = CrossGuard().verify_iso20022_with_rules(
+        xml, {"allowed_currencies": ["USD"]}
+    )
+    assert result.guard_results.get("BusinessRule.currency") is False
+    assert result.passed is False
+
+
 def test_missing_currency_with_configured_rule_fails_closed():
     xml = "<Document><IntrBkSttlmAmt>100</IntrBkSttlmAmt></Document>"
     result = CrossGuard().verify_iso20022_with_rules(
         xml, {"allowed_currencies": ["USD"]}
     )
     assert result.guard_results.get("BusinessRule.currency") is False
+    assert result.passed is False
+
+
+def test_unresolved_amount_keeps_configured_bound_verdicts():
+    result = _check(_doc(_tag("nan")))
+    assert result.guard_results.get("BusinessRule.amount") is False
+    assert result.guard_results.get("BusinessRule.max_amount") is False
+    assert result.guard_results.get("BusinessRule.min_amount") is False
+    assert result.passed is False
+
+
+def test_unconfigured_bounds_stay_absent_on_failure():
+    xml = _doc(_tag("nan"))
+    result = CrossGuard().verify_iso20022_with_rules(xml, {})
+    assert result.guard_results.get("BusinessRule.amount") is False
+    assert "BusinessRule.max_amount" not in result.guard_results
+    assert "BusinessRule.min_amount" not in result.guard_results
     assert result.passed is False

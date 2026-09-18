@@ -370,6 +370,14 @@ class CrossGuard:
         if amount_error is not None:
             violations.append(amount_error)
             guard_results[self._CHECK_AMOUNT] = False
+            # Keep configured bound verdicts explicit: consumers keying on
+            # max/min must see False, not a missing key.
+            for key, rule in (
+                (self._CHECK_MAX, "max_amount"),
+                (self._CHECK_MIN, "min_amount"),
+            ):
+                if rule in business_rules:
+                    guard_results[key] = False
         else:
             guard_results[self._CHECK_AMOUNT] = True
             self._check_amount_bounds(
@@ -487,11 +495,21 @@ class CrossGuard:
         if "allowed_currencies" not in business_rules:
             return
         currencies = set()
+        missing = False
         for attrs, _text in self._extract_xml_occurrences(xml_string):
             ccy = re.search(r'Ccy="([^"]+)"', attrs)
             if ccy:
                 currencies.add(ccy.group(1))
-        if len(currencies) != 1:
+            else:
+                # An occurrence without Ccy must fail: otherwise one
+                # compliant currency masks a currency-less sibling.
+                missing = True
+        if missing:
+            violations.append(
+                "Currency missing on an IntrBkSttlmAmt occurrence"
+            )
+            guard_results[self._CHECK_CCY] = False
+        elif len(currencies) != 1:
             violations.append(
                 "Currency must agree across IntrBkSttlmAmt occurrences"
             )
