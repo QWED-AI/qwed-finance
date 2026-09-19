@@ -87,6 +87,23 @@ def test_cdata_wrapped_tag_decoy_is_not_an_occurrence():
     assert result.passed is False
 
 
+def test_split_cdata_preserves_legitimate_value():
+    xml = (
+        "<Document><IntrBkSttlmAmt><![CDATA[100]]><![CDATA[<X>]]></IntrBkSttlmAmt>"
+        "</Document>"
+    )
+    result = _check(xml)
+    assert _amount_guards(result) == (True, True, True)
+
+
+def test_single_quoted_ccy_accepted():
+    xml = "<Document><IntrBkSttlmAmt Ccy='USD'>100</IntrBkSttlmAmt></Document>"
+    result = CrossGuard().verify_iso20022_with_rules(
+        xml, {"allowed_currencies": ["USD"]}
+    )
+    assert result.guard_results.get("BusinessRule.currency") is True
+
+
 def test_cdata_exceeding_amount_fails_bounds():
     xml = "<Document><IntrBkSttlmAmt><![CDATA[9999999]]></IntrBkSttlmAmt></Document>"
     result = _check(xml)

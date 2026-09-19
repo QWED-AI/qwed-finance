@@ -412,7 +412,15 @@ class CrossGuard:
     )
     _CDATA_RE = re.compile(r"^\s*<!\[CDATA\[(.*)\]\]>\s*$", re.DOTALL)
     _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-    _CDATA_TAGGED_RE = re.compile(r"<!\[CDATA\[.*?<[A-Za-z/!?].*?\]\]>", re.DOTALL)
+    #: One CDATA section at a time: judging sections individually keeps a
+    #: tag-shaped decoy from swallowing a neighboring legitimate value.
+    _CDATA_SECTION_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
+    _TAG_LIKE_RE = re.compile(r"<[A-Za-z/!?]")
+
+    @staticmethod
+    def _strip_tagged_cdata(match: "re.Match") -> str:
+        """Drop tag-shaped CDATA decoys, unwrap pure-text CDATA."""
+        return "" if CrossGuard._TAG_LIKE_RE.search(match.group(1)) else match.group(0)
 
     def _extract_xml_occurrences(self, xml: str):
         """Every IntrBkSttlmAmt occurrence as (attrs, text-or-None).
@@ -427,7 +435,7 @@ class CrossGuard:
         never agreement.
         """
         uncommented = self._COMMENT_RE.sub("", xml)
-        decoded = self._CDATA_TAGGED_RE.sub("", uncommented)
+        decoded = self._CDATA_SECTION_RE.sub(self._strip_tagged_cdata, uncommented)
         occurrences = []
         for match in self._AMOUNT_ELEMENT_RE.finditer(decoded):
             attrs, content = match.group(1), match.group(2)
@@ -509,9 +517,9 @@ class CrossGuard:
         currencies = set()
         missing = False
         for attrs, _text in self._extract_xml_occurrences(xml_string):
-            ccy = re.search(r'Ccy="([^"]+)"', attrs)
+            ccy = re.search(r"""Ccy\s*=\s*(["'])([^"']+)\1""", attrs)
             if ccy:
-                currencies.add(ccy.group(1))
+                currencies.add(ccy.group(2))
             else:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
