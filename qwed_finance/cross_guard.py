@@ -412,20 +412,24 @@ class CrossGuard:
     )
     _CDATA_RE = re.compile(r"^\s*<!\[CDATA\[(.*)\]\]>\s*$", re.DOTALL)
     _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+    _CDATA_TAGGED_RE = re.compile(r"<!\[CDATA\[.*?<[A-Za-z/!?].*?\]\]>", re.DOTALL)
 
     def _extract_xml_occurrences(self, xml: str):
         """Every IntrBkSttlmAmt occurrence as (attrs, text-or-None).
 
         Comments are stripped first so comment-only decoys neither
-        satisfy nor poison the agreement check. CDATA sections unwrap
-        to their logical text (a CDATA amount counts, it does not
-        vanish). Empty and self-closing elements yield empty text and
-        fail parsing downstream — an occurrence with no amount is
-        unverifiable, never agreement.
+        satisfy nor poison the agreement check. CDATA sections holding
+        tag-shaped content are decoys, not elements: they are removed
+        before matching, while pure-text CDATA unwraps to its logical
+        text (a CDATA amount counts, it does not vanish). Empty and
+        self-closing elements yield empty text and fail parsing
+        downstream — an occurrence with no amount is unverifiable,
+        never agreement.
         """
         uncommented = self._COMMENT_RE.sub("", xml)
+        decoded = self._CDATA_TAGGED_RE.sub("", uncommented)
         occurrences = []
-        for match in self._AMOUNT_ELEMENT_RE.finditer(uncommented):
+        for match in self._AMOUNT_ELEMENT_RE.finditer(decoded):
             attrs, content = match.group(1), match.group(2)
             if content is None:
                 occurrences.append((attrs, ""))

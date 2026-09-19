@@ -77,6 +77,16 @@ def test_cdata_amount_evaluates_as_logical_value():
     assert _amount_guards(_check(xml)) == (True, True, True)
 
 
+def test_cdata_wrapped_tag_decoy_is_not_an_occurrence():
+    xml = (
+        "<Document><IntrBkSttlmAmt><![CDATA[<IntrBkSttlmAmt>100"
+        "</IntrBkSttlmAmt>]]></IntrBkSttlmAmt></Document>"
+    )
+    result = _check(xml)
+    assert result.guard_results.get("BusinessRule.amount") is False
+    assert result.passed is False
+
+
 def test_cdata_exceeding_amount_fails_bounds():
     xml = "<Document><IntrBkSttlmAmt><![CDATA[9999999]]></IntrBkSttlmAmt></Document>"
     result = _check(xml)
