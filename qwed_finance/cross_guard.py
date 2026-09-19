@@ -4,6 +4,7 @@ Enables multi-layer verification (e.g., scan SWIFT message for sanctioned entiti
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Dict, Any
 from .compliance_guard import (
     ComplianceGuard,
@@ -14,7 +15,6 @@ from .message_guard import MessageGuard, MessageType
 from .query_guard import QueryGuard
 from .models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
 import re
-
 
 @dataclass
 class CrossGuardResult:
@@ -364,31 +364,30 @@ class CrossGuard:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Step 2: Extract values and check business rules
-        amount = self._extract_xml_value(xml_string, "IntrBkSttlmAmt")
-        currency = self._extract_xml_attribute(xml_string, "IntrBkSttlmAmt", "Ccy")
-        
-        # Check amount constraints
-        if amount is not None:
-            if "max_amount" in business_rules and amount > business_rules["max_amount"]:
-                violations.append(f"Amount {amount} exceeds max {business_rules['max_amount']}")
-                guard_results["BusinessRule.max_amount"] = False
-            else:
-                guard_results["BusinessRule.max_amount"] = True
-            
-            if "min_amount" in business_rules and amount < business_rules["min_amount"]:
-                violations.append(f"Amount {amount} below min {business_rules['min_amount']}")
-                guard_results["BusinessRule.min_amount"] = False
-            else:
-                guard_results["BusinessRule.min_amount"] = True
-        
+        # Step 2: Extract values and check business rules (fail-closed
+        # amount and currency agreement, #66).
+        amount, amount_error = self._resolve_agreed_amount(xml_string)
+        if amount_error is not None:
+            violations.append(amount_error)
+            guard_results[self._CHECK_AMOUNT] = False
+            # Keep configured bound verdicts explicit: consumers keying on
+            # max/min must see False, not a missing key.
+            for key, rule in (
+                (self._CHECK_MAX, "max_amount"),
+                (self._CHECK_MIN, "min_amount"),
+            ):
+                if rule in business_rules:
+                    guard_results[key] = False
+        else:
+            guard_results[self._CHECK_AMOUNT] = True
+            self._check_amount_bounds(
+                amount, business_rules, violations, guard_results
+            )
+
         # Check currency
-        if currency and "allowed_currencies" in business_rules:
-            if currency not in business_rules["allowed_currencies"]:
-                violations.append(f"Currency {currency} not in allowed list")
-                guard_results["BusinessRule.currency"] = False
-            else:
-                guard_results["BusinessRule.currency"] = True
+        self._check_currency_agreement(
+            xml_string, business_rules, violations, guard_results
+        )
         
         passed = all(guard_results.values())
         
@@ -399,6 +398,150 @@ class CrossGuard:
             receipts=receipts
         )
     
+    #: Guard-result keys for the ISO amount/currency agreement checks.
+    _CHECK_AMOUNT = "BusinessRule.amount"
+    _CHECK_MAX = "BusinessRule.max_amount"
+    _CHECK_MIN = "BusinessRule.min_amount"
+    _CHECK_CCY = "BusinessRule.currency"
+
+    #: Matches one IntrBkSttlmAmt element: attribute string plus inner
+    #: content, or a self-closing element (content None).
+    _AMOUNT_ELEMENT_RE = re.compile(
+        r"<IntrBkSttlmAmt\b([^>]*?)(?:/\s*>|>(.*?)</IntrBkSttlmAmt\s*>)",
+        re.DOTALL,
+    )
+    _CDATA_RE = re.compile(r"^\s*<!\[CDATA\[(.*)\]\]>\s*$", re.DOTALL)
+    _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+    #: One CDATA section at a time: judging sections individually keeps a
+    #: tag-shaped decoy from swallowing a neighboring legitimate value.
+    _CDATA_SECTION_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
+    _TAG_LIKE_RE = re.compile(r"<[A-Za-z/!?]")
+
+    @staticmethod
+    def _strip_tagged_cdata(match: "re.Match") -> str:
+        """Drop tag-shaped CDATA decoys, unwrap pure-text CDATA."""
+        return "" if CrossGuard._TAG_LIKE_RE.search(match.group(1)) else match.group(0)
+
+    def _extract_xml_occurrences(self, xml: str):
+        """Every IntrBkSttlmAmt occurrence as (attrs, text-or-None).
+
+        Comments are stripped first so comment-only decoys neither
+        satisfy nor poison the agreement check. CDATA sections holding
+        tag-shaped content are decoys, not elements: they are removed
+        before matching, while pure-text CDATA unwraps to its logical
+        text (a CDATA amount counts, it does not vanish). Empty and
+        self-closing elements yield empty text and fail parsing
+        downstream — an occurrence with no amount is unverifiable,
+        never agreement.
+        """
+        uncommented = self._COMMENT_RE.sub("", xml)
+        decoded = self._CDATA_SECTION_RE.sub(self._strip_tagged_cdata, uncommented)
+        occurrences = []
+        for match in self._AMOUNT_ELEMENT_RE.finditer(decoded):
+            attrs, content = match.group(1), match.group(2)
+            if content is None:
+                occurrences.append((attrs, ""))
+                continue
+            cdata = self._CDATA_RE.match(content)
+            occurrences.append((attrs, cdata.group(1) if cdata else content))
+        return occurrences
+
+    @staticmethod
+    def _parse_amount_text(raw: str) -> Optional[Decimal]:
+        """Parse one raw amount to an exact Decimal, or None.
+
+        Decimal (not float) comparison: distinct large monetary values
+        can collapse to one binary float and falsely agree. Non-finite
+        values are rejected — NaN reads as below every bound.
+        """
+        try:
+            value = Decimal(raw.replace(",", "").strip())
+        except InvalidOperation:
+            return None
+        return value if value.is_finite() else None
+
+    def _resolve_agreed_amount(self, xml_string: str):
+        """Agreed IntrBkSttlmAmt across all occurrences, or an error.
+
+        Returns (Decimal, None) on agreement, (None, violation-message)
+        for missing/unparseable/non-finite/disagreeing amounts.
+        """
+        raw_amounts = [
+            text for _, text in self._extract_xml_occurrences(xml_string)
+        ]
+        if not raw_amounts:
+            return None, "Missing IntrBkSttlmAmt: amount cannot be verified"
+        parsed = [self._parse_amount_text(raw) for raw in raw_amounts]
+        if any(value is None for value in parsed) or len(set(parsed)) != 1:
+            return None, (
+                "Ambiguous IntrBkSttlmAmt amounts: every occurrence must "
+                "parse to one finite agreed value"
+            )
+        return parsed[0], None
+
+    def _check_amount_bounds(self, amount, business_rules, violations, guard_results) -> None:
+        """Apply configured max/min bound checks to an agreed amount.
+
+        Guard keys are recorded only for configured rules: an unconfigured
+        bound must stay absent, never read as a passed check.
+        """
+        if "max_amount" not in business_rules and "min_amount" not in business_rules:
+            return
+        if "max_amount" in business_rules:
+            if amount > Decimal(str(business_rules["max_amount"])):
+                violations.append(
+                    f"Amount {amount} exceeds max {business_rules['max_amount']}"
+                )
+                guard_results[self._CHECK_MAX] = False
+            else:
+                guard_results[self._CHECK_MAX] = True
+
+        if "min_amount" in business_rules:
+            if amount < Decimal(str(business_rules["min_amount"])):
+                violations.append(
+                    f"Amount {amount} below min {business_rules['min_amount']}"
+                )
+                guard_results[self._CHECK_MIN] = False
+            else:
+                guard_results[self._CHECK_MIN] = True
+
+    def _check_currency_agreement(self, xml_string, business_rules, violations, guard_results) -> None:
+        """Require one agreed currency when the rule is configured.
+
+        First-match reads let repeated amounts with different currencies
+        pass; a missing currency with a configured allow-list fails
+        closed instead of silently skipping.
+        """
+        if "allowed_currencies" not in business_rules:
+            return
+        currencies = set()
+        missing = False
+        for attrs, _text in self._extract_xml_occurrences(xml_string):
+            ccy = re.search(r"""Ccy\s*=\s*(["'])([^"']+)\1""", attrs)
+            if ccy:
+                currencies.add(ccy.group(2))
+            else:
+                # An occurrence without Ccy must fail: otherwise one
+                # compliant currency masks a currency-less sibling.
+                missing = True
+        if missing:
+            violations.append(
+                "Currency missing on an IntrBkSttlmAmt occurrence"
+            )
+            guard_results[self._CHECK_CCY] = False
+        elif len(currencies) != 1:
+            violations.append(
+                "Currency must agree across IntrBkSttlmAmt occurrences"
+            )
+            guard_results[self._CHECK_CCY] = False
+        elif next(iter(currencies)) not in business_rules["allowed_currencies"]:
+            violations.append(
+                f"Currency {next(iter(currencies))} not in allowed list"
+            )
+            guard_results[self._CHECK_CCY] = False
+        else:
+            guard_results[self._CHECK_CCY] = True
+
     def _extract_xml_value(self, xml: str, element: str) -> Optional[float]:
         """Extract numeric value from XML element"""
         pattern = rf'<{element}[^>]*>([^<]+)</{element}>'
