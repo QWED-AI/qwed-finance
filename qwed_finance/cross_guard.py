@@ -468,22 +468,30 @@ class CrossGuard:
         return parsed[0], None
 
     def _check_amount_bounds(self, amount, business_rules, violations, guard_results) -> None:
-        """Apply configured max/min bound checks to an agreed amount."""
-        if "max_amount" in business_rules and amount > Decimal(str(business_rules["max_amount"])):
-            violations.append(
-                f"Amount {amount} exceeds max {business_rules['max_amount']}"
-            )
-            guard_results[self._CHECK_MAX] = False
-        else:
-            guard_results[self._CHECK_MAX] = True
+        """Apply configured max/min bound checks to an agreed amount.
 
-        if "min_amount" in business_rules and amount < Decimal(str(business_rules["min_amount"])):
-            violations.append(
-                f"Amount {amount} below min {business_rules['min_amount']}"
-            )
-            guard_results[self._CHECK_MIN] = False
-        else:
-            guard_results[self._CHECK_MIN] = True
+        Guard keys are recorded only for configured rules: an unconfigured
+        bound must stay absent, never read as a passed check.
+        """
+        if "max_amount" not in business_rules and "min_amount" not in business_rules:
+            return
+        if "max_amount" in business_rules:
+            if amount > Decimal(str(business_rules["max_amount"])):
+                violations.append(
+                    f"Amount {amount} exceeds max {business_rules['max_amount']}"
+                )
+                guard_results[self._CHECK_MAX] = False
+            else:
+                guard_results[self._CHECK_MAX] = True
+
+        if "min_amount" in business_rules:
+            if amount < Decimal(str(business_rules["min_amount"])):
+                violations.append(
+                    f"Amount {amount} below min {business_rules['min_amount']}"
+                )
+                guard_results[self._CHECK_MIN] = False
+            else:
+                guard_results[self._CHECK_MIN] = True
 
     def _check_currency_agreement(self, xml_string, business_rules, violations, guard_results) -> None:
         """Require one agreed currency when the rule is configured.
