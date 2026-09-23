@@ -100,13 +100,33 @@ def test_impossible_32a_date_rejected():
 
 
 @pytest.mark.parametrize(
-    "amount", ["1000.00", "1000,000", "10000000000000000,00", "-5,00"]
+    "amount",
+    ["1000.00", "1000", "0", "0,00", "10000000000000000,00", "-5,00"],
 )
 def test_non_grammar_32a_amounts_rejected(amount):
     body = _mt103_frame(":20:R", f":32A:260516USD{amount}")
     result = _guard().verify_swift_mt(body, SwiftMtType.MT103)
     assert result.valid is False
     assert any("32A" in e for e in result.errors)
+
+
+def test_32a_embedded_whitespace_rejected():
+    body = _mt103_frame(":20:R", ":32A:260516USD1 0,00")
+    result = _guard().verify_swift_mt(body, SwiftMtType.MT103)
+    assert result.valid is False
+    assert any("32A" in e for e in result.errors)
+
+
+def test_32a_trailing_comma_amount_accepted():
+    body = _mt103_frame(
+        ":20:R",
+        ":23B:CRED",
+        ":32A:260516USD1000,",
+        ":50K:/1\nA",
+        ":59:/2\nB",
+        ":71A:OUR",
+    )
+    assert _guard().verify_swift_mt(body, SwiftMtType.MT103).valid is True
 
 
 def test_duplicate_tags_rejected():
@@ -148,8 +168,29 @@ def test_iso_valid_message_passes():
     assert ISOGuard().verify_payment_message(_iso_msg()).verified is True
 
 
+def test_iso_valid_fractional_offset_timestamp_passes():
+    message = _iso_msg(CreDtTm="2026-01-01T00:00:00.123+05:30")
+    assert ISOGuard().verify_payment_message(message).verified is True
+
+
 @pytest.mark.parametrize(
-    "credtm", ["yesterday", "2026-13-45", "2026-01-01", "not-a-date"]
+    "credtm",
+    [
+        "yesterday",
+        "2026-13-45",
+        "2026-01-01",
+        "not-a-date",
+        # shaped like ISO but out of range at the pattern level
+        "2026-13-45T00:00:00Z",
+        "2026-01-01T25:00:00Z",
+        "2026-01-01T00:61:00Z",
+        # shaped and in-range but impossible as a calendar date
+        "2026-02-30T00:00:00Z",
+        # non-ASCII digits must not pass
+        "２０２６-01-01T00:00:00Z",
+        # $ would accept a trailing newline; \Z must not
+        "2026-01-01T00:00:00Z\n",
+    ],
 )
 def test_iso_garbage_timestamps_rejected(credtm):
     result = ISOGuard().verify_payment_message(_iso_msg(CreDtTm=credtm))
@@ -166,3 +207,142 @@ def test_iso_rider_fields_rejected():
     message = _iso_msg()
     message["injected"] = {"tool": "x"}
     assert ISOGuard().verify_payment_message(message).verified is False
+
+
+# --- Review fixes: hierarchy, framing scoping, parser hardening -----------
+
+
+_FULL_CAMT = (
+    "<Document>"
+    "<GrpHdr><MsgId>S</MsgId><CreDtTm>2026-01-01</CreDtTm></GrpHdr>"
+    "<Stmt><Acct>ACC</Acct><Bal>C123</Bal></Stmt>"
+    "</Document>"
+)
+
+_FULL_PAIN = (
+    "<Document>"
+    "<GrpHdr><MsgId>P</MsgId><CreDtTm>2026-01-01</CreDtTm></GrpHdr>"
+    "<PmtInf><PmtMtd>TRF</PmtMtd></PmtInf>"
+    "</Document>"
+)
+
+
+def test_full_camt053_validates():
+    result = _guard().verify_iso20022_xml(_FULL_CAMT, MessageType.CAMT_053)
+    assert result.valid is True
+
+
+def test_full_pain001_validates():
+    result = _guard().verify_iso20022_xml(_FULL_PAIN, MessageType.PAIN_001)
+    assert result.valid is True
+
+
+def test_element_in_wrong_branch_rejected():
+    # MsgId exists but sits outside GrpHdr: global-name presence is not
+    # enough, the ISO parentage must hold.
+    xml = (
+        "<Document>"
+        "<MsgId>A</MsgId>"
+        "<GrpHdr><CreDtTm>2026-01-01</CreDtTm><NbOfTxs>1</NbOfTxs></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any("under GrpHdr" in e for e in result.errors)
+
+
+def test_amount_without_ccy_rejected():
+    xml = _FULL_PACS.replace(' Ccy="USD"', "")
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any("Ccy" in e for e in result.errors)
+
+
+def test_encoding_declaration_still_validates():
+    xml = '<?xml version="1.0" encoding="UTF-8"?>' + _FULL_PACS
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is True
+
+
+def test_dtd_entity_payload_rejected():
+    xml = '<!DOCTYPE Document [<!ENTITY x "boom">]><Document>&x;</Document>'
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+
+
+def test_block5_trailer_still_valid():
+    framed = _GOOD_MT103 + "{5:{CHK:ABCDEF123456}}"
+    assert _guard().verify_swift_mt(framed, SwiftMtType.MT103).valid is True
+
+
+def test_fields_outside_block4_do_not_count():
+    framed = _mt103_frame(
+        ":23B:CRED",
+        ":32A:260516USD1000,00",
+        ":50K:/1\nA",
+        ":59:/2\nB",
+        ":71A:OUR",
+    )
+    injected = ":20:REF1" + framed
+    result = _guard().verify_swift_mt(injected, SwiftMtType.MT103)
+    assert result.valid is False
+    assert any("Missing required field 20" in e for e in result.errors)
+
+
+def test_colon_in_field20_value_counts_toward_length():
+    body = _mt103_frame(
+        ":20:ABCDEFGHIJKLMNO:P",
+        ":23B:CRED",
+        ":32A:260516USD1000,00",
+        ":50K:/1\nA",
+        ":59:/2\nB",
+        ":71A:OUR",
+    )
+    result = _guard().verify_swift_mt(body, SwiftMtType.MT103)
+    assert result.valid is False
+    assert any("exceeds maximum length" in e for e in result.errors)
+
+
+def test_value_embedded_tag_is_not_a_field_or_duplicate():
+    guard = _guard()
+    body = ":20:REF1\n:72:/INS/x:20:OVERRIDE"
+    assert guard._parse_mt_fields(body)["20"] == "REF1"
+    assert guard._duplicate_mt_tags(body) == []
+
+
+def test_mt202_uses_its_own_required_set():
+    result = _guard().verify_swift_mt("{4:\n:20:R\n-}", SwiftMtType.MT202)
+    assert result.message_type == "MT202"
+    assert any("Missing required field 21" in e for e in result.errors)
+
+
+def test_enum_member_without_branch_falls_to_minimal_set():
+    result = _guard().verify_swift_mt("{4:\n:20:R\n-}", SwiftMtType.MT950)
+    assert result.valid is True
+
+
+def test_local_name_of_non_string_tag_is_empty():
+    assert MessageGuard._local_name(object()) == ""
+
+
+def test_validators_fail_closed_on_unparseable_xml():
+    guard = _guard()
+    expected = ["Message is not parseable XML"]
+    assert guard._validate_pacs008("<bad") == expected
+    assert guard._validate_camt053("<bad") == expected
+    assert guard._validate_pain001("<bad") == expected
+
+
+def test_defusedxml_fallback_runs_when_lxml_unavailable():
+    guard = _guard()
+    guard._lxml_available = False
+    assert guard._is_well_formed_xml("<Document/>") is True
+    assert guard._is_well_formed_xml("a < b") is False
+
+
+def test_iso_unsupported_msg_type_rejected():
+    result = ISOGuard().verify_payment_message(_iso_msg(), "pacs.002")
+    assert result.verified is False
+    assert "Unsupported message type" in (result.error or "")
