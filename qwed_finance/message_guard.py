@@ -54,9 +54,9 @@ class MessageGuard:
     # cross-type wrappers and miss the real pain.001 wrapper
     # (CstmrCdtTrfInitn). Anything else blocks the parentage path.
     _WRAPPERS_BY_TYPE = {
-        "pacs.008": frozenset({"FIToFICstmrCdtTrf"}),
-        "camt.053": frozenset({"BkToCstmrStmt"}),
-        "pain.001": frozenset({"CstmrCdtTrfInitn"}),
+        MessageType.PACS_008: frozenset({"FIToFICstmrCdtTrf"}),
+        MessageType.CAMT_053: frozenset({"BkToCstmrStmt"}),
+        MessageType.PAIN_001: frozenset({"CstmrCdtTrfInitn"}),
     }
 
     def __init__(self):
@@ -243,17 +243,22 @@ class MessageGuard:
         """Validate pacs.008 Customer Credit Transfer"""
         errors = []
 
-        # Required elements for pacs.008 with expected ancestor
+        # Required elements for pacs.008 with expected ancestor.
+        # Per-transaction children are checked on every CdtTrfTxInf below:
+        # a global any-instance check lets one complete transaction mask
+        # an empty sibling.
         required = {
             "GrpHdr": "Document",           # Group Header
             "MsgId": "GrpHdr",              # Message ID
             "CreDtTm": "GrpHdr",            # Creation DateTime
             "NbOfTxs": "GrpHdr",            # Number of Transactions
             "CdtTrfTxInf": "Document",      # Credit Transfer Info
-            "IntrBkSttlmAmt": "CdtTrfTxInf",  # Interbank Settlement Amount
-            "DbtrAgt": "CdtTrfTxInf",       # Debtor Agent
-            "CdtrAgt": "CdtTrfTxInf",       # Creditor Agent
         }
+        transaction_required = (
+            "IntrBkSttlmAmt",               # Interbank Settlement Amount
+            "DbtrAgt",                      # Debtor Agent
+            "CdtrAgt",                      # Creditor Agent
+        )
 
         root = self._parse_xml(xml)
         if root is None:
@@ -262,9 +267,20 @@ class MessageGuard:
 
         errors.extend(
             self._require_elements(
-                root, required, self._WRAPPERS_BY_TYPE["pacs.008"]
+                root, required, self._WRAPPERS_BY_TYPE[MessageType.PACS_008]
             )
         )
+
+        transactions = [
+            e for e in root.iter() if self._local_name(e) == "CdtTrfTxInf"
+        ]
+        for index, transaction in enumerate(transactions, start=1):
+            present = {self._local_name(child) for child in transaction}
+            for child in transaction_required:
+                if child not in present:
+                    errors.append(
+                        f"Transaction {index}: missing required element {child}"
+                    )
 
         # An IntrBkSttlmAmt without Ccy is not a settlement amount: only
         # checking present currency values let amountless messages pass.
@@ -305,7 +321,7 @@ class MessageGuard:
             return [_PARSE_ERROR]
 
         return self._require_elements(
-            root, required, self._WRAPPERS_BY_TYPE["camt.053"]
+            root, required, self._WRAPPERS_BY_TYPE[MessageType.CAMT_053]
         )
 
     def _validate_pain001(self, xml: str) -> List[str]:
@@ -323,7 +339,7 @@ class MessageGuard:
             return [_PARSE_ERROR]
 
         return self._require_elements(
-            root, required, self._WRAPPERS_BY_TYPE["pain.001"]
+            root, required, self._WRAPPERS_BY_TYPE[MessageType.PAIN_001]
         )
 
     # ==================== SWIFT MT Validation ====================
@@ -449,16 +465,16 @@ class MessageGuard:
         """Validate Field 32A: Value Date/Currency/Amount.
 
         Grammar: 6-digit calendar date (YYMMDD) + 3-letter currency +
-        positive amount with a mandatory comma decimal separator and up
-        to 3 decimal digits, 15 chars max per SWIFT 15d (e.g.
-        260118USD1000,00). Embedded whitespace is not part of the
+        positive amount with a mandatory comma decimal separator, total
+        at most 15 chars per SWIFT 15d (integer part up to 14 digits,
+        e.g. 260118USD1000,00). Embedded whitespace is not part of the
         grammar, and an all-zero amount is not a settlement.
         """
         text = value.strip()
         if re.search(r"\s", text):
             return False
         match = re.fullmatch(
-            r"([0-9]{6})([A-Z]{3})([0-9]{1,12},[0-9]{0,3})", text
+            r"([0-9]{6})([A-Z]{3})([0-9]{1,14},[0-9]{0,3})", text
         )
         if not match or len(match.group(3)) > 15:
             return False

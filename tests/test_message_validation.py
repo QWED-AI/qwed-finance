@@ -126,6 +126,20 @@ def test_32a_unicode_digits_rejected(value):
     assert _guard()._validate_32a_field(value) is False
 
 
+@pytest.mark.parametrize(
+    "amount,expected",
+    [
+        ("1234567890123,", True),     # 13 int digits, 14 chars
+        ("12345678901234,", True),    # 14 int digits, 15 chars
+        ("123456789012345,", False),  # 16 chars over 15d
+        ("1234567890123,45", False),  # 16 chars over 15d
+        ("99999999999,999", True),    # 15 chars with 3 decimals
+    ],
+)
+def test_32a_swift_15d_length_envelope(amount, expected):
+    assert _guard()._validate_32a_field(f"260516USD{amount}") is expected
+
+
 def test_32a_trailing_comma_amount_accepted():
     body = _mt103_frame(
         ":20:R",
@@ -289,6 +303,42 @@ def test_amount_without_ccy_rejected():
     result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
     assert result.valid is False
     assert any("Ccy" in e for e in result.errors)
+
+
+def test_second_transaction_must_carry_required_children():
+    # One complete transaction must not mask an empty sibling: required
+    # children are validated per CdtTrfTxInf.
+    xml = (
+        "<Document>"
+        "<GrpHdr><MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm>"
+        "<NbOfTxs>2</NbOfTxs></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "<CdtTrfTxInf></CdtTrfTxInf>"
+        "</Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any(
+        "Transaction 2: missing required element IntrBkSttlmAmt" in e
+        for e in result.errors
+    )
+
+
+def test_two_complete_transactions_valid():
+    tx = (
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+    )
+    xml = (
+        "<Document>"
+        "<GrpHdr><MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm>"
+        "<NbOfTxs>2</NbOfTxs></GrpHdr>"
+        + tx + tx +
+        "</Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is True
 
 
 def test_encoding_declaration_still_validates():
