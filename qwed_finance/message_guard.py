@@ -241,12 +241,6 @@ class MessageGuard:
 
     def _validate_pacs008(self, xml: str) -> List[str]:
         """Validate pacs.008 Customer Credit Transfer"""
-        errors = []
-
-        # Required elements for pacs.008 with expected ancestor.
-        # Per-transaction children are checked on every CdtTrfTxInf below:
-        # a global any-instance check lets one complete transaction mask
-        # an empty sibling.
         required = {
             "GrpHdr": "Document",           # Group Header
             "MsgId": "GrpHdr",              # Message ID
@@ -262,15 +256,24 @@ class MessageGuard:
 
         root = self._parse_xml(xml)
         if root is None:
-            errors.append(_PARSE_ERROR)
-            return errors
+            return [_PARSE_ERROR]
 
-        errors.extend(
-            self._require_elements(
-                root, required, self._WRAPPERS_BY_TYPE[MessageType.PACS_008]
-            )
+        errors = self._require_elements(
+            root, required, self._WRAPPERS_BY_TYPE[MessageType.PACS_008]
         )
+        errors.extend(
+            self._transaction_child_errors(root, transaction_required)
+        )
+        errors.extend(self._currency_errors(root))
+        return errors
 
+    def _transaction_child_errors(self, root, transaction_required) -> List[str]:
+        """Required children on every CdtTrfTxInf.
+
+        A global any-instance check lets one complete transaction mask
+        an empty sibling; each transaction is validated on its own.
+        """
+        errors = []
         transactions = [
             e for e in root.iter() if self._local_name(e) == "CdtTrfTxInf"
         ]
@@ -281,30 +284,28 @@ class MessageGuard:
                     errors.append(
                         f"Transaction {index}: missing required element {child}"
                     )
+        return errors
 
-        # An IntrBkSttlmAmt without Ccy is not a settlement amount: only
-        # checking present currency values let amountless messages pass.
-        amount_elements = [
-            e for e in root.iter() if self._local_name(e) == "IntrBkSttlmAmt"
-        ]
-        for element in amount_elements:
-            if not any(
+    def _currency_errors(self, root) -> List[str]:
+        """Settlement amounts must carry Ccy; codes must be 3 uppercase
+        letters. An amount without Ccy is not a settlement amount —
+        checking only present values let amountless messages pass."""
+        errors = []
+        for element in root.iter():
+            if self._local_name(element) == "IntrBkSttlmAmt" and not any(
                 self._local_name(key) == "Ccy" for key in element.attrib
             ):
                 errors.append(
                     "Missing required attribute Ccy on IntrBkSttlmAmt"
                 )
-
-        # Validate currency codes carried on any element
-        for element in root.iter():
             for key, value in element.attrib.items():
-                if self._local_name(key) == "Ccy":
-                    if not re.fullmatch(r"[A-Z]{3}", value):
-                        errors.append(
-                            "Invalid currency code format "
-                            "(must be 3 uppercase letters)"
-                        )
-
+                if self._local_name(key) == "Ccy" and not re.fullmatch(
+                    r"[A-Z]{3}", value
+                ):
+                    errors.append(
+                        "Invalid currency code format "
+                        "(must be 3 uppercase letters)"
+                    )
         return errors
 
     def _validate_camt053(self, xml: str) -> List[str]:
