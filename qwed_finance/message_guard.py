@@ -50,12 +50,14 @@ class MessageGuard:
     """
 
     # ISO wrapper elements allowed between a required element and its
-    # expected parent; anything else blocks the parentage path.
-    _ALLOWED_WRAPPERS = frozenset({
-        "FIToFICstmrCdtTrf",  # pacs.008
-        "BkToCstmrStmt",      # camt.053
-        "CdtTrfInitn",        # pain.001
-    })
+    # expected parent, per message type: a shared set would both accept
+    # cross-type wrappers and miss the real pain.001 wrapper
+    # (CstmrCdtTrfInitn). Anything else blocks the parentage path.
+    _WRAPPERS_BY_TYPE = {
+        "pacs.008": frozenset({"FIToFICstmrCdtTrf"}),
+        "camt.053": frozenset({"BkToCstmrStmt"}),
+        "pain.001": frozenset({"CstmrCdtTrfInitn"}),
+    }
 
     def __init__(self):
         self._lxml_available = self._check_lxml()
@@ -190,7 +192,9 @@ class MessageGuard:
         return tag.rsplit("}", 1)[1] if "}" in tag else tag
 
     @staticmethod
-    def _require_elements(root, required: Dict[str, str]) -> List[str]:
+    def _require_elements(
+        root, required: Dict[str, str], wrappers: frozenset
+    ) -> List[str]:
         """Required elements must exist under their expected ancestors.
 
         Substring or global-name checks let elements in unrelated branches
@@ -206,7 +210,7 @@ class MessageGuard:
                 errors.append(f"Missing required element: {child}")
                 continue
             if not any(
-                MessageGuard._has_ancestor(i, parents, expected_parent)
+                MessageGuard._has_ancestor(i, parents, expected_parent, wrappers)
                 for i in instances
             ):
                 errors.append(
@@ -215,9 +219,11 @@ class MessageGuard:
         return errors
 
     @staticmethod
-    def _has_ancestor(instance, parents: dict, expected_parent: str) -> bool:
-        """True when expected_parent sits above instance with only ISO
-        wrappers in between.
+    def _has_ancestor(
+        instance, parents: dict, expected_parent: str, wrappers: frozenset
+    ) -> bool:
+        """True when expected_parent sits above instance with only
+        message-type ISO wrappers in between.
 
         Accepting any matching ancestor let a CdtTrfTxInf nested inside
         GrpHdr satisfy the Document requirement, merging two branches
@@ -228,7 +234,7 @@ class MessageGuard:
             name = MessageGuard._local_name(cursor)
             if name == expected_parent:
                 return True
-            if name not in MessageGuard._ALLOWED_WRAPPERS:
+            if name not in wrappers:
                 return False
             cursor = parents.get(cursor)
         return False
@@ -254,7 +260,11 @@ class MessageGuard:
             errors.append(_PARSE_ERROR)
             return errors
 
-        errors.extend(self._require_elements(root, required))
+        errors.extend(
+            self._require_elements(
+                root, required, self._WRAPPERS_BY_TYPE["pacs.008"]
+            )
+        )
 
         # An IntrBkSttlmAmt without Ccy is not a settlement amount: only
         # checking present currency values let amountless messages pass.
@@ -294,7 +304,9 @@ class MessageGuard:
         if root is None:
             return [_PARSE_ERROR]
 
-        return self._require_elements(root, required)
+        return self._require_elements(
+            root, required, self._WRAPPERS_BY_TYPE["camt.053"]
+        )
 
     def _validate_pain001(self, xml: str) -> List[str]:
         """Validate pain.001 Customer Payment Initiation"""
@@ -310,7 +322,9 @@ class MessageGuard:
         if root is None:
             return [_PARSE_ERROR]
 
-        return self._require_elements(root, required)
+        return self._require_elements(
+            root, required, self._WRAPPERS_BY_TYPE["pain.001"]
+        )
 
     # ==================== SWIFT MT Validation ====================
     

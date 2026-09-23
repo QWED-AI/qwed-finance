@@ -358,6 +358,43 @@ def test_wrapper_root_without_document_rejected():
     assert result.valid is False
 
 
+def test_pain001_real_wrapper_accepted():
+    xml = (
+        "<Document><CstmrCdtTrfInitn>"
+        "<GrpHdr><MsgId>P</MsgId><CreDtTm>2026-01-01</CreDtTm></GrpHdr>"
+        "<PmtInf><PmtMtd>TRF</PmtMtd></PmtInf>"
+        "</CstmrCdtTrfInitn></Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PAIN_001)
+    assert result.valid is True
+
+
+def test_stale_pain_wrapper_rejected():
+    # CdtTrfInitn is not the pain.001 wrapper; only CstmrCdtTrfInitn is.
+    xml = (
+        "<Document><CdtTrfInitn>"
+        "<GrpHdr><MsgId>P</MsgId><CreDtTm>2026-01-01</CreDtTm></GrpHdr>"
+        "<PmtInf><PmtMtd>TRF</PmtMtd></PmtInf>"
+        "</CdtTrfInitn></Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PAIN_001)
+    assert result.valid is False
+
+
+def test_cross_type_wrapper_rejected():
+    # A pacs.008-shaped document under the camt.053 wrapper must not pass.
+    xml = (
+        "<Document><BkToCstmrStmt>"
+        "<GrpHdr><MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm>"
+        "<NbOfTxs>1</NbOfTxs></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</BkToCstmrStmt></Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+
+
 def test_block5_trailer_still_valid():
     framed = _GOOD_MT103 + "{5:{CHK:ABCDEF123456}}"
     assert _guard().verify_swift_mt(framed, SwiftMtType.MT103).valid is True
