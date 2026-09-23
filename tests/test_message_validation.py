@@ -159,6 +159,13 @@ def test_mt940_minimum_set():
     assert result.valid is False
 
 
+def test_mt940_empty_opening_balance_rejected():
+    body = "{4:\n:20:REF\n:25:ACC\n:60F:\n-}"
+    result = _guard().verify_swift_mt(body, SwiftMtType.MT940)
+    assert result.valid is False
+    assert any("60F/60M" in e for e in result.errors)
+
+
 # --- #64: ISO JSON schema --------------------------------------------------
 
 
@@ -292,6 +299,61 @@ def test_encoding_declaration_still_validates():
 
 def test_dtd_entity_payload_rejected():
     xml = '<!DOCTYPE Document [<!ENTITY x "boom">]><Document>&x;</Document>'
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+
+
+def test_unpaired_surrogate_returns_invalid_result():
+    # Without lxml, encode() raises UnicodeEncodeError on surrogates;
+    # the guard must fail closed, not crash.
+    guard = _guard()
+    guard._lxml_available = False
+    result = guard.verify_iso20022_xml(
+        "<Document>\ud800</Document>", MessageType.PACS_008
+    )
+    assert result.valid is False
+
+
+def test_misnested_transaction_branch_rejected():
+    # CdtTrfTxInf inside GrpHdr must not satisfy the Document requirement:
+    # header and transaction info are separate ISO branches.
+    xml = (
+        "<Document><GrpHdr><MsgId>A</MsgId>"
+        "<CreDtTm>2026-01-01</CreDtTm><NbOfTxs>1</NbOfTxs>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt>"
+        "</CdtTrfTxInf></GrpHdr></Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any(
+        "CdtTrfTxInf must appear under Document" in e for e in result.errors
+    )
+
+
+def test_iso_wrapper_path_accepted():
+    xml = (
+        "<Document><FIToFICstmrCdtTrf>"
+        "<GrpHdr><MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm>"
+        "<NbOfTxs>1</NbOfTxs></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</FIToFICstmrCdtTrf></Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is True
+
+
+def test_wrapper_root_without_document_rejected():
+    # Chain of wrappers that ends at the root never reaches Document.
+    xml = (
+        "<FIToFICstmrCdtTrf>"
+        "<GrpHdr><MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm>"
+        "<NbOfTxs>1</NbOfTxs></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</FIToFICstmrCdtTrf>"
+    )
     result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
     assert result.valid is False
 

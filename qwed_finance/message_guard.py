@@ -48,7 +48,15 @@ class MessageGuard:
     Deterministic validation for banking messages.
     Ensures LLM-generated messages conform to ISO 20022 and SWIFT standards.
     """
-    
+
+    # ISO wrapper elements allowed between a required element and its
+    # expected parent; anything else blocks the parentage path.
+    _ALLOWED_WRAPPERS = frozenset({
+        "FIToFICstmrCdtTrf",  # pacs.008
+        "BkToCstmrStmt",      # camt.053
+        "CdtTrfInitn",        # pain.001
+    })
+
     def __init__(self):
         self._lxml_available = self._check_lxml()
         
@@ -167,7 +175,10 @@ class MessageGuard:
         """
         try:
             return DET.fromstring(xml_string.encode("utf-8"))
-        except (ET.ParseError, DefusedXmlException):
+        except (ET.ParseError, DefusedXmlException, UnicodeEncodeError):
+            # UnicodeEncodeError: unpaired surrogates raise in encode()
+            # before parsing; without this the guard crashes instead of
+            # failing closed.
             return None
 
     @staticmethod
@@ -205,11 +216,20 @@ class MessageGuard:
 
     @staticmethod
     def _has_ancestor(instance, parents: dict, expected_parent: str) -> bool:
-        """True when instance sits under an ancestor named expected_parent."""
+        """True when expected_parent sits above instance with only ISO
+        wrappers in between.
+
+        Accepting any matching ancestor let a CdtTrfTxInf nested inside
+        GrpHdr satisfy the Document requirement, merging two branches
+        that ISO keeps separate.
+        """
         cursor = parents.get(instance)
         while cursor is not None:
-            if MessageGuard._local_name(cursor) == expected_parent:
+            name = MessageGuard._local_name(cursor)
+            if name == expected_parent:
                 return True
+            if name not in MessageGuard._ALLOWED_WRAPPERS:
+                return False
             cursor = parents.get(cursor)
         return False
 
@@ -355,11 +375,12 @@ class MessageGuard:
                 )
 
         # MT940 carries its opening balance in 60F (final) or 60M
-        # (intermediate); either satisfies the balance requirement.
+        # (intermediate); the tag alone is not a balance — the value
+        # must be populated.
         if (
             mt_type == SwiftMtType.MT940
-            and "60F" not in fields
-            and "60M" not in fields
+            and not fields.get("60F")
+            and not fields.get("60M")
         ):
             errors.append("Missing required field 60F/60M: Opening Balance")
 
