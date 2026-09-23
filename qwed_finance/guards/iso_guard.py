@@ -27,7 +27,13 @@ class ISOGuard:
             "type": "object",
             "properties": {
                 "MsgId": {"type": "string", "pattern": "^[A-Za-z0-9]{1,35}$"},
-                "CreDtTm": {"type": "string", "format": "date-time"},
+                "CreDtTm": {
+                    "type": "string",
+                    "pattern": (
+                        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}"
+                        r"(:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
+                    ),
+                },
                 "NbOfTxs": {"type": "integer", "minimum": 1},
                 "TtlIntrBkSttlmAmt": {
                     "type": "object",
@@ -35,10 +41,12 @@ class ISOGuard:
                         "amount": {"type": "number", "minimum": 0.01},
                         "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
                     },
-                    "required": ["amount", "currency"]
+                    "required": ["amount", "currency"],
+                    "additionalProperties": False
                 }
             },
-            "required": ["MsgId", "CreDtTm", "NbOfTxs"]
+            "required": ["MsgId", "CreDtTm", "NbOfTxs", "TtlIntrBkSttlmAmt"],
+            "additionalProperties": False
         }
 
     def verify_payment_message(self, message: Dict[str, Any], msg_type: str = "pacs.008") -> ISOResult:

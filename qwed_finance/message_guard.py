@@ -4,9 +4,11 @@ Ensures LLM-generated banking messages are structurally correct
 """
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
+from datetime import datetime
 from enum import Enum
 import re
+import xml.etree.ElementTree as ET
 
 
 class MessageType(Enum):
@@ -61,6 +63,11 @@ class MessageGuard:
             "32A": "Value Date/Currency/Amount",
             "58A": "Beneficiary Institution"
         }
+
+        self.mt940_required_fields = {
+            "20": "Transaction Reference",
+            "25": "Account Identification",
+        }
     
     def _check_lxml(self) -> bool:
         """Check if lxml is available for XML validation"""
@@ -110,6 +117,13 @@ class MessageGuard:
             errors.extend(self._validate_camt053(xml_string))
         elif msg_type == MessageType.PAIN_001:
             errors.extend(self._validate_pain001(xml_string))
+        else:
+            # Fail closed: message types without a validator branch must
+            # never validate (PACS_002/CAMT_054 hit this today — even ""
+            # would otherwise pass, see #61).
+            errors.append(
+                f"Unsupported message type for validation: {msg_type.value}"
+            )
         
         return MessageResult(
             valid=len(errors) == 0,
@@ -126,17 +140,56 @@ class MessageGuard:
                 from lxml import etree
                 etree.fromstring(xml_string.encode())
                 return True
-            except:
+            except Exception:
                 return False
-        else:
-            # Fallback: basic bracket matching
-            return xml_string.count("<") == xml_string.count(">")
+        # Dependency-free fallback: real parse, not bracket counting.
+        # Bracket-balanced non-XML ("<>" * n, "a < b") passed here (#61).
+        try:
+            ET.fromstring(xml_string)
+            return True
+        except ET.ParseError:
+            return False
     
+    @staticmethod
+    def _element_local_names(xml_string: str) -> Optional[Set[str]]:
+        """Local tag names of the parsed tree, or None if unparseable.
+
+        Substring checks against the raw string match comments, CDATA,
+        and attribute text; only parsed element names count (#62).
+        """
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError:
+            return None
+        names = set()
+        for element in root.iter():
+            tag = element.tag
+            if not isinstance(tag, str):
+                continue
+            names.add(tag.rsplit("}", 1)[1] if "}" in tag else tag)
+        return names
+
+    @staticmethod
+    def _element_currencies(xml_string: str) -> List[str]:
+        """Ccy attribute values on actual parsed elements."""
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError:
+            return []
+        values = []
+        for element in root.iter():
+            for key, value in element.attrib.items():
+                name = key.rsplit("}", 1)[1] if "}" in key else key
+                if name == "Ccy":
+                    values.append(value)
+        return values
+
     def _validate_pacs008(self, xml: str) -> List[str]:
         """Validate pacs.008 Customer Credit Transfer"""
         errors = []
-        
+
         # Required elements for pacs.008
+        names = self._element_local_names(xml)
         required = [
             "GrpHdr",           # Group Header
             "MsgId",            # Message ID
@@ -147,41 +200,50 @@ class MessageGuard:
             "DbtrAgt",          # Debtor Agent
             "CdtrAgt",          # Creditor Agent
         ]
-        
+
+        if names is None:
+            errors.append("Message is not parseable XML")
+            return errors
+
         for element in required:
-            if f"<{element}" not in xml and f"<{element}>" not in xml:
+            if element not in names:
                 errors.append(f"Missing required element: {element}")
-        
+
         # Validate amount format
-        if "Ccy=" in xml:
+        for ccy in self._element_currencies(xml):
             # Check currency code is 3 uppercase letters
-            ccy_match = re.search(r'Ccy="([A-Z]{3})"', xml)
-            if not ccy_match:
+            if not re.fullmatch(r"[A-Z]{3}", ccy):
                 errors.append("Invalid currency code format (must be 3 uppercase letters)")
-        
+
         return errors
     
     def _validate_camt053(self, xml: str) -> List[str]:
         """Validate camt.053 Bank Statement"""
         errors = []
-        
+
+        names = self._element_local_names(xml)
         required = [
             "GrpHdr",
             "Stmt",             # Statement
             "Acct",             # Account
             "Bal",              # Balance
         ]
-        
+
+        if names is None:
+            errors.append("Message is not parseable XML")
+            return errors
+
         for element in required:
-            if f"<{element}" not in xml:
+            if element not in names:
                 errors.append(f"Missing required element: {element}")
-        
+
         return errors
-    
+
     def _validate_pain001(self, xml: str) -> List[str]:
         """Validate pain.001 Customer Payment Initiation"""
         errors = []
-        
+
+        names = self._element_local_names(xml)
         required = [
             "GrpHdr",
             "MsgId",
@@ -189,11 +251,15 @@ class MessageGuard:
             "PmtInf",           # Payment Information
             "PmtMtd",           # Payment Method
         ]
-        
+
+        if names is None:
+            errors.append("Message is not parseable XML")
+            return errors
+
         for element in required:
-            if f"<{element}" not in xml:
+            if element not in names:
                 errors.append(f"Missing required element: {element}")
-        
+
         return errors
     
     # ==================== SWIFT MT Validation ====================
@@ -224,13 +290,30 @@ class MessageGuard:
             required = self.mt103_required_fields
         elif mt_type == SwiftMtType.MT202:
             required = self.mt202_required_fields
+        elif mt_type == SwiftMtType.MT940:
+            required = self.mt940_required_fields
         else:
             required = {"20": "Transaction Reference"}  # Minimal
-        
+
+        # MT messages travel framed in block 4 ({4: ... -}); an unframed
+        # blob is not a message and must not validate (#63).
+        if "{4:" not in mt_string or not mt_string.rstrip().endswith("-}"):
+            errors.append("Missing block-4 framing ({4: ... -})")
+
+        # Duplicate tags are ambiguous: the parser below folds last-wins
+        # while consumers read first-match, so any duplication fails (#63).
+        for tag in self._duplicate_mt_tags(mt_string):
+            errors.append(f"Duplicate field {tag}: ambiguous tag occurrence")
+
         # Check required fields
         for field_tag, field_name in required.items():
             if field_tag not in fields:
                 errors.append(f"Missing required field {field_tag}: {field_name}")
+
+        # MT940 carries its opening balance in 60F (final) or 60M
+        # (intermediate); either satisfies the balance requirement.
+        if mt_type == SwiftMtType.MT940 and "60F" not in fields and "60M" not in fields:
+            errors.append("Missing required field 60F/60M: Opening Balance")
         
         # Validate field formats
         if "32A" in fields:
@@ -251,6 +334,18 @@ class MessageGuard:
             field_count=len(fields)
         )
     
+    @staticmethod
+    def _duplicate_mt_tags(mt_string: str) -> List[str]:
+        """Line-anchored tags occurring more than once, in first-seen order."""
+        seen = set()
+        duplicates = []
+        for match in re.finditer(r"^:(\d{2}[A-Z]?):", mt_string, re.MULTILINE):
+            tag = match.group(1)
+            if tag in seen and tag not in duplicates:
+                duplicates.append(tag)
+            seen.add(tag)
+        return duplicates
+
     def _parse_mt_fields(self, mt_string: str) -> Dict[str, str]:
         """Parse SWIFT MT message into field dictionary"""
         fields = {}
@@ -265,10 +360,21 @@ class MessageGuard:
         return fields
     
     def _validate_32a_field(self, value: str) -> bool:
-        """Validate Field 32A: Value Date/Currency/Amount"""
-        # Format: YYMMDDCCY######.## (e.g., 260118USD1000,00)
-        pattern = r'^\d{6}[A-Z]{3}[\d,\.]+$'
-        return bool(re.match(pattern, value.replace(" ", "")))
+        """Validate Field 32A: Value Date/Currency/Amount.
+
+        Grammar: 6-digit calendar date (YYMMDD) + 3-letter currency +
+        positive amount with a single comma decimal separator, 15 chars
+        max per the SWIFT 32A definition (e.g. 260118USD1000,00).
+        """
+        text = value.replace(" ", "")
+        match = re.fullmatch(r"(\d{6})([A-Z]{3})(\d{1,12}(,\d{1,2})?)", text)
+        if not match or len(match.group(3)) > 15:
+            return False
+        try:
+            datetime.strptime(match.group(1), "%y%m%d")
+        except ValueError:
+            return False
+        return True
     
     # ==================== BIC/IBAN Validation ====================
     
