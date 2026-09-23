@@ -32,12 +32,13 @@ class ISOGuard:
                     "type": "string",
                     # ASCII digits, full calendar ranges, mandatory seconds,
                     # \Z anchor (no trailing newline). Shape only: values
-                    # still pass through datetime.fromisoformat below for
-                    # real month/day validity (e.g. Feb 30).
+                    # still pass through datetime parsing below for real
+                    # month/day validity (e.g. Feb 30).
                     "pattern": (
                         r"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"
                         r"T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
-                        r"(\.\d+)?(Z|[+-](0[0-9]|1[0-9]|2[0-3]):?[0-5][0-9])?\Z"
+                        r"(\.[0-9]+)?"
+                        r"(Z|[+-](0[0-9]|1[0-9]|2[0-3]):?[0-5][0-9])?\Z"
                     ),
                 },
                 "NbOfTxs": {"type": "integer", "minimum": 1},
@@ -57,12 +58,15 @@ class ISOGuard:
 
     @staticmethod
     def _valid_credtm(value: str) -> bool:
-        """True when value is a real calendar timestamp (ISO-8601)."""
-        text = value.strip()
-        if text.endswith(("Z", "z")):
-            text = text[:-1] + "+00:00"
+        """True when the pattern-validated prefix is a real calendar date.
+
+        The schema pattern already enforces fixed-width ASCII fields, so
+        strptime on the first 19 characters is exact and does not depend
+        on the Python version (3.10 fromisoformat rejects fraction and
+        no-colon offset forms the pattern allows).
+        """
         try:
-            datetime.fromisoformat(text)
+            datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
             return True
         except ValueError:
             return False

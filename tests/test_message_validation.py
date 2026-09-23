@@ -117,6 +117,15 @@ def test_32a_embedded_whitespace_rejected():
     assert any("32A" in e for e in result.errors)
 
 
+@pytest.mark.parametrize(
+    "value", ["260516USD1٠٠٠,٠٠", "٢٦٠٥١٦USD1000,00"]
+)
+def test_32a_unicode_digits_rejected(value):
+    # SWIFT X character set is ASCII-only; \d would accept Unicode
+    # decimal digits in both the date and the amount.
+    assert _guard()._validate_32a_field(value) is False
+
+
 def test_32a_trailing_comma_amount_accepted():
     body = _mt103_frame(
         ":20:R",
@@ -171,6 +180,21 @@ def test_iso_valid_message_passes():
 def test_iso_valid_fractional_offset_timestamp_passes():
     message = _iso_msg(CreDtTm="2026-01-01T00:00:00.123+05:30")
     assert ISOGuard().verify_payment_message(message).verified is True
+
+
+@pytest.mark.parametrize(
+    "credtm",
+    [
+        # accepted by the pattern; calendar check must not depend on
+        # Python-version fromisoformat quirks (3.10 rejects these forms)
+        "2026-01-01T00:00:00+0530",
+        "2026-01-01T00:00:00.1Z",
+        "2026-01-01T00:00:00.123456+0000",
+    ],
+)
+def test_iso_version_stable_timestamp_forms_pass(credtm):
+    result = ISOGuard().verify_payment_message(_iso_msg(CreDtTm=credtm))
+    assert result.verified is True
 
 
 @pytest.mark.parametrize(

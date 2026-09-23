@@ -12,6 +12,9 @@ import xml.etree.ElementTree as ET
 from defusedxml import ElementTree as DET
 from defusedxml.common import DefusedXmlException
 
+# Shared fail-closed error for XML that does not parse under defusedxml
+_PARSE_ERROR = "Message is not parseable XML"
+
 
 class MessageType(Enum):
     """Standard ISO 20022 message types"""
@@ -191,21 +194,24 @@ class MessageGuard:
             if not instances:
                 errors.append(f"Missing required element: {child}")
                 continue
-            under_parent = False
-            for instance in instances:
-                cursor = parents.get(instance)
-                while cursor is not None:
-                    if MessageGuard._local_name(cursor) == expected_parent:
-                        under_parent = True
-                        break
-                    cursor = parents.get(cursor)
-                if under_parent:
-                    break
-            if not under_parent:
+            if not any(
+                MessageGuard._has_ancestor(i, parents, expected_parent)
+                for i in instances
+            ):
                 errors.append(
                     f"Element {child} must appear under {expected_parent}"
                 )
         return errors
+
+    @staticmethod
+    def _has_ancestor(instance, parents: dict, expected_parent: str) -> bool:
+        """True when instance sits under an ancestor named expected_parent."""
+        cursor = parents.get(instance)
+        while cursor is not None:
+            if MessageGuard._local_name(cursor) == expected_parent:
+                return True
+            cursor = parents.get(cursor)
+        return False
 
     def _validate_pacs008(self, xml: str) -> List[str]:
         """Validate pacs.008 Customer Credit Transfer"""
@@ -225,7 +231,7 @@ class MessageGuard:
 
         root = self._parse_xml(xml)
         if root is None:
-            errors.append("Message is not parseable XML")
+            errors.append(_PARSE_ERROR)
             return errors
 
         errors.extend(self._require_elements(root, required))
@@ -266,7 +272,7 @@ class MessageGuard:
 
         root = self._parse_xml(xml)
         if root is None:
-            return ["Message is not parseable XML"]
+            return [_PARSE_ERROR]
 
         return self._require_elements(root, required)
 
@@ -282,10 +288,10 @@ class MessageGuard:
 
         root = self._parse_xml(xml)
         if root is None:
-            return ["Message is not parseable XML"]
+            return [_PARSE_ERROR]
 
         return self._require_elements(root, required)
-    
+
     # ==================== SWIFT MT Validation ====================
     
     def verify_swift_mt(
@@ -327,37 +333,8 @@ class MessageGuard:
         for tag in self._duplicate_mt_tags(body):
             errors.append(f"Duplicate field {tag}: ambiguous tag occurrence")
 
-        # Get required fields for this message type
-        if mt_type == SwiftMtType.MT103:
-            required = self.mt103_required_fields
-        elif mt_type == SwiftMtType.MT202:
-            required = self.mt202_required_fields
-        elif mt_type == SwiftMtType.MT940:
-            required = self.mt940_required_fields
-        else:
-            required = {"20": "Transaction Reference"}  # Minimal
+        errors.extend(self._collect_field_errors(mt_type, fields))
 
-        # Check required fields
-        for field_tag, field_name in required.items():
-            if field_tag not in fields:
-                errors.append(f"Missing required field {field_tag}: {field_name}")
-
-        # MT940 carries its opening balance in 60F (final) or 60M
-        # (intermediate); either satisfies the balance requirement.
-        if mt_type == SwiftMtType.MT940 and "60F" not in fields and "60M" not in fields:
-            errors.append("Missing required field 60F/60M: Opening Balance")
-        
-        # Validate field formats
-        if "32A" in fields:
-            # Format: YYMMDDCCY######.## (Date + Currency + Amount)
-            if not self._validate_32a_field(fields["32A"]):
-                errors.append("Field 32A has invalid format (expected: YYMMDDCCY + Amount)")
-        
-        if "20" in fields:
-            # Transaction reference: max 16 characters
-            if len(fields["20"]) > 16:
-                errors.append("Field 20 exceeds maximum length of 16 characters")
-        
         return MessageResult(
             valid=len(errors) == 0,
             message_type=mt_type.value,
@@ -365,6 +342,47 @@ class MessageGuard:
             warnings=warnings,
             field_count=len(fields)
         )
+
+    def _collect_field_errors(
+        self, mt_type: SwiftMtType, fields: Dict[str, str]
+    ) -> List[str]:
+        """Required-field, balance, and per-field format errors."""
+        errors = []
+        for field_tag, field_name in self._required_fields_for(mt_type).items():
+            if field_tag not in fields:
+                errors.append(
+                    f"Missing required field {field_tag}: {field_name}"
+                )
+
+        # MT940 carries its opening balance in 60F (final) or 60M
+        # (intermediate); either satisfies the balance requirement.
+        if (
+            mt_type == SwiftMtType.MT940
+            and "60F" not in fields
+            and "60M" not in fields
+        ):
+            errors.append("Missing required field 60F/60M: Opening Balance")
+
+        if "32A" in fields and not self._validate_32a_field(fields["32A"]):
+            errors.append(
+                "Field 32A has invalid format (expected: YYMMDDCCY + Amount)"
+            )
+
+        # Transaction reference: max 16 characters
+        if "20" in fields and len(fields["20"]) > 16:
+            errors.append("Field 20 exceeds maximum length of 16 characters")
+
+        return errors
+
+    def _required_fields_for(self, mt_type: SwiftMtType) -> Dict[str, str]:
+        """Required-field set for the MT type; minimal set otherwise."""
+        if mt_type == SwiftMtType.MT103:
+            return self.mt103_required_fields
+        if mt_type == SwiftMtType.MT202:
+            return self.mt202_required_fields
+        if mt_type == SwiftMtType.MT940:
+            return self.mt940_required_fields
+        return {"20": "Transaction Reference"}  # Minimal
     
     @staticmethod
     def _duplicate_mt_tags(mt_string: str) -> List[str]:
@@ -404,7 +422,9 @@ class MessageGuard:
         text = value.strip()
         if re.search(r"\s", text):
             return False
-        match = re.fullmatch(r"(\d{6})([A-Z]{3})(\d{1,12},\d{0,3})", text)
+        match = re.fullmatch(
+            r"([0-9]{6})([A-Z]{3})([0-9]{1,12},[0-9]{0,3})", text
+        )
         if not match or len(match.group(3)) > 15:
             return False
         if not re.search(r"[1-9]", match.group(3)):
