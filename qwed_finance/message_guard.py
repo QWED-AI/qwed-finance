@@ -49,14 +49,23 @@ class MessageGuard:
     Ensures LLM-generated messages conform to ISO 20022 and SWIFT standards.
     """
 
-    # ISO wrapper elements allowed between a required element and its
-    # expected parent, per message type: a shared set would both accept
-    # cross-type wrappers and miss the real pain.001 wrapper
-    # (CstmrCdtTrfInitn). Anything else blocks the parentage path.
+    # ISO wrapper elements, keyed by expected_parent: wrappers sit only
+    # directly under Document (FIToFICstmrCdtTrf etc. are document-level
+    # roots), so the wrapper hop is legal only when validating that
+    # Document-level relation. Every other relation requires a direct
+    # parent — a shared flat set would let FIToFICstmrCdtTrf sit between
+    # GrpHdr and MsgId (wrong branch), and would miss the real pain.001
+    # wrapper (CstmrCdtTrfInitn). Anything else blocks the parentage path.
     _WRAPPERS_BY_TYPE = {
-        MessageType.PACS_008: frozenset({"FIToFICstmrCdtTrf"}),
-        MessageType.CAMT_053: frozenset({"BkToCstmrStmt"}),
-        MessageType.PAIN_001: frozenset({"CstmrCdtTrfInitn"}),
+        MessageType.PACS_008: {
+            "Document": frozenset({"FIToFICstmrCdtTrf"})
+        },
+        MessageType.CAMT_053: {
+            "Document": frozenset({"BkToCstmrStmt"})
+        },
+        MessageType.PAIN_001: {
+            "Document": frozenset({"CstmrCdtTrfInitn"})
+        },
     }
 
     def __init__(self):
@@ -193,12 +202,15 @@ class MessageGuard:
 
     @staticmethod
     def _require_elements(
-        root, required: Dict[str, str], wrappers: frozenset
+        root, required: Dict[str, str], wrappers: Dict[str, frozenset]
     ) -> List[str]:
         """Required elements must exist under their expected ancestors.
 
         Substring or global-name checks let elements in unrelated branches
         satisfy requirements without ISO parentage (#62, review fix).
+        Every instance must be correctly parented (all, not any): with any
+        one well-placed instance passing, a stray duplicate of the same
+        element in the wrong branch went unreported.
         """
         errors = []
         parents = {child: parent for parent in root.iter() for child in parent}
@@ -209,8 +221,9 @@ class MessageGuard:
             if not instances:
                 errors.append(f"Missing required element: {child}")
                 continue
-            if not any(
-                MessageGuard._has_ancestor(i, parents, expected_parent, wrappers)
+            allowed = wrappers.get(expected_parent, frozenset())
+            if not all(
+                MessageGuard._has_ancestor(i, parents, expected_parent, allowed)
                 for i in instances
             ):
                 errors.append(
@@ -220,24 +233,29 @@ class MessageGuard:
 
     @staticmethod
     def _has_ancestor(
-        instance, parents: dict, expected_parent: str, wrappers: frozenset
+        instance, parents: dict, expected_parent: str, allowed: frozenset
     ) -> bool:
-        """True when expected_parent sits above instance with only
-        message-type ISO wrappers in between.
+        """True when expected_parent is the direct parent of instance, or
+        the parent of exactly one allowed wrapper in between.
 
-        Accepting any matching ancestor let a CdtTrfTxInf nested inside
-        GrpHdr satisfy the Document requirement, merging two branches
-        that ISO keeps separate.
+        allowed is empty except for Document-level hops, and at most one
+        wrapper level is accepted: a walk up the whole tree let
+        FIToFICstmrCdtTrf between GrpHdr and MsgId (wrapper in the wrong
+        branch), merging two branches that ISO keeps separate.
         """
         cursor = parents.get(instance)
-        while cursor is not None:
-            name = MessageGuard._local_name(cursor)
-            if name == expected_parent:
-                return True
-            if name not in wrappers:
-                return False
-            cursor = parents.get(cursor)
-        return False
+        if cursor is None:
+            return False
+        name = MessageGuard._local_name(cursor)
+        if name == expected_parent:
+            return True
+        if name not in allowed:
+            return False
+        grandparent = parents.get(cursor)
+        return (
+            grandparent is not None
+            and MessageGuard._local_name(grandparent) == expected_parent
+        )
 
     def _validate_pacs008(self, xml: str) -> List[str]:
         """Validate pacs.008 Customer Credit Transfer"""

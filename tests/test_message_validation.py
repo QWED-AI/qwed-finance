@@ -381,6 +381,59 @@ def test_misnested_transaction_branch_rejected():
     )
 
 
+def test_wrapper_inside_header_branch_rejected():
+    # The ISO wrapper is a Document-level root only: FIToFICstmrCdtTrf
+    # sitting between GrpHdr and its children is the wrapper in the wrong
+    # branch and must not bridge that parentage hop.
+    xml = (
+        "<Document><GrpHdr><FIToFICstmrCdtTrf>"
+        "<MsgId>A</MsgId><CreDtTm>2026-01-01</CreDtTm><NbOfTxs>1</NbOfTxs>"
+        "</FIToFICstmrCdtTrf></GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any(
+        "MsgId must appear under GrpHdr" in e for e in result.errors
+    )
+
+
+def test_stray_transaction_alongside_valid_one_rejected():
+    # One well-placed CdtTrfTxInf must not mask a complete duplicate
+    # lodged in GrpHdr: every instance must sit under Document.
+    xml = (
+        "<Document><GrpHdr><MsgId>A</MsgId>"
+        "<CreDtTm>2026-01-01</CreDtTm><NbOfTxs>2</NbOfTxs>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</GrpHdr>"
+        "<CdtTrfTxInf><IntrBkSttlmAmt Ccy=\"USD\">100</IntrBkSttlmAmt>"
+        "<DbtrAgt>X</DbtrAgt><CdtrAgt>Y</CdtrAgt></CdtTrfTxInf>"
+        "</Document>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any(
+        "CdtTrfTxInf must appear under Document" in e for e in result.errors
+    )
+
+
+def test_required_element_as_document_root_rejected():
+    # The root element has no parent: a required element acting as the
+    # document root cannot satisfy any expected-parent requirement.
+    xml = (
+        "<GrpHdr><MsgId>A</MsgId>"
+        "<CreDtTm>2026-01-01</CreDtTm><NbOfTxs>1</NbOfTxs></GrpHdr>"
+    )
+    result = _guard().verify_iso20022_xml(xml, MessageType.PACS_008)
+    assert result.valid is False
+    assert any(
+        "GrpHdr must appear under Document" in e for e in result.errors
+    )
+
+
 def test_iso_wrapper_path_accepted():
     xml = (
         "<Document><FIToFICstmrCdtTrf>"
