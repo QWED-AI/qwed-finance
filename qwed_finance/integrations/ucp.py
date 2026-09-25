@@ -332,18 +332,16 @@ class UCPIntegration:
                 "KYC evidence"
             )
         
-        # Determine status: hits and unscreened outcomes block; a
-        # deterministic config breach (over-limit, disallowed currency)
-        # blocks outright rather than queueing for review; everything
-        # else — including SANCTIONS REVIEW, structural errors, and
-        # missing KYC context — routes to manual review, never approval.
+        # Determine status: hits and unscreened outcomes block, and a
+        # deterministic config breach blocks only on a structurally valid
+        # document — a malformed message with extractable over-limit text
+        # is a manual-review case, not a policy verdict (#88). Everything
+        # else — SANCTIONS REVIEW, structural errors, missing KYC
+        # context — routes to manual review, never approval.
         if any(
             v.startswith(("SANCTIONS HIT", "SANCTIONS UNSCREENED"))
             for v in violations
-        ):
-            status = PaymentStatus.BLOCKED
-            can_proceed = False
-        elif rules.policy_breach:
+        ) or (rules.policy_breach and msg_result.valid):
             status = PaymentStatus.BLOCKED
             can_proceed = False
         elif len(violations) == 0:
@@ -370,11 +368,17 @@ class UCPIntegration:
     @classmethod
     def _xml_safe_for_screening(cls, xml_message: Any) -> bool:
         """Refuse documents unsafe to expand for screening."""
-        return (
-            isinstance(xml_message, str)
-            and not cls._DOCTYPE_RE.search(xml_message)
-            and len(xml_message.encode("utf-8")) <= cls._MAX_SCREEN_XML_BYTES
-        )
+        if not isinstance(xml_message, str):
+            return False
+        if cls._DOCTYPE_RE.search(xml_message):
+            return False
+        try:
+            byte_len = len(xml_message.encode("utf-8"))
+        except UnicodeEncodeError:
+            # Unpaired surrogates: malformed input is refused for
+            # screening rather than crashing the size check (#88).
+            return False
+        return byte_len <= cls._MAX_SCREEN_XML_BYTES
 
     def _fail_sanctions(
         self, violations: list, receipts: list, message: str
@@ -543,7 +547,8 @@ class UCPIntegration:
                     "description": "Verify ISO 20022 XML with sanctions screening",
                     "input": {
                         "xml_message": "string",
-                        "sanctions_list": "array (optional)"
+                        "sanctions_list": "array (optional)",
+                        "kyc_verified": "boolean (optional)"
                     },
                     "output": {
                         "can_proceed": "boolean",

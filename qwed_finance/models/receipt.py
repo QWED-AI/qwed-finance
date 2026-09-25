@@ -119,14 +119,21 @@ class ReceiptGenerator:
     
     @staticmethod
     def hash_input(input_data: Any) -> str:
-        """Generate SHA-256 hash of input data"""
+        """Generate SHA-256 hash of input data.
+
+        backslashreplace: unpaired surrogates appear in malformed input
+        exactly when validation is about to reject it — hashing must
+        never raise instead of returning the rejected result (#88).
+        """
         if isinstance(input_data, str):
             content = input_data
         elif isinstance(input_data, (dict, list)):
             content = json.dumps(input_data, sort_keys=True)
         else:
             content = str(input_data)
-        return hashlib.sha256(content.encode()).hexdigest()
+        return hashlib.sha256(
+            content.encode("utf-8", "backslashreplace")
+        ).hexdigest()
     
     @staticmethod
     def create_receipt(

@@ -6,6 +6,9 @@ never approve, and every verdict must be evidenced by a receipt whose
 hash covers the operative amount and currency — not a document prefix.
 """
 
+import hashlib
+import json
+
 from qwed_finance.cross_guard import CrossGuard
 from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
 from qwed_finance.models.receipt import ReceiptGenerator
@@ -184,3 +187,112 @@ def test_sanctions_hit_still_blocks_clean_limits():
     )
     assert result.status == PaymentStatus.BLOCKED
     assert any("SANCTIONS HIT" in v for v in result.violations)
+
+
+# ===== #88 review fixes =====
+
+
+def test_surrogate_input_fails_closed_without_crash():
+    # Unpaired surrogates appear in malformed input exactly when
+    # validation is about to reject it: hashing, size checks, and
+    # screening must all fail closed, never raise (#88).
+    bad = "<Document>\ud800</Document>"
+    result = CrossGuard().verify_iso20022_with_rules(
+        bad, {"allowed_currencies": _ALLOWED}
+    )
+    assert result.passed is False
+    ucp = UCPIntegration().verify_iso20022_payment(bad, ["SOMEONE ELSE"])
+    assert ucp.can_proceed is False
+    assert ucp.status == PaymentStatus.BLOCKED
+
+
+def test_namespaced_amount_and_currency_extracted():
+    xml = (
+        '<Document xmlns:p="urn:x">'
+        '<p:IntrBkSttlmAmt Ccy="USD">100</p:IntrBkSttlmAmt></Document>'
+    )
+    rules = CrossGuard().check_business_rules(
+        xml, {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.amount") is True
+    assert rules.guard_results.get("BusinessRule.currency") is True
+
+
+def test_character_references_decode_before_judging():
+    # A real parser reads `1&#48;00` as 1000 and `US&#68;` as USD; the
+    # rules engine must judge the same value instead of false-rejecting.
+    xml = (
+        "<Document>"
+        '<IntrBkSttlmAmt Ccy="US&#68;">1&#48;00</IntrBkSttlmAmt></Document>'
+    )
+    rules = CrossGuard().check_business_rules(
+        xml, {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.amount") is True
+    assert rules.guard_results.get("BusinessRule.currency") is True
+    assert rules.receipts[0].metadata["currencies"] == ["USD"]
+
+
+def test_missing_currency_sibling_is_structural_not_policy():
+    # One disallowed present currency plus a Ccy-less sibling is a
+    # structural failure — it must never classify as a policy breach,
+    # which would route the document to BLOCKED instead of review (#88).
+    mixed = (
+        '<Document><IntrBkSttlmAmt Ccy="RUB">100</IntrBkSttlmAmt>'
+        "<IntrBkSttlmAmt>100</IntrBkSttlmAmt></Document>"
+    )
+    rules = CrossGuard().check_business_rules(
+        mixed, {"allowed_currencies": ["USD"]}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert rules.policy_breach is False
+
+
+def test_structure_invalid_over_limit_routes_to_review():
+    # A malformed document with extractable over-limit text is a
+    # manual-review case; the policy breach must not outrank the
+    # documented structural-error path (#88).
+    xml = (
+        "<Document><GrpHdr><MsgId>A</MsgId>"
+        "<CreDtTm>2026-01-01T00:00:00</CreDtTm></GrpHdr>"
+        "<CdtTrfTxInf>"
+        '<IntrBkSttlmAmt Ccy="USD">2000000</IntrBkSttlmAmt>'
+        "<Dbtr><Nm>ACME CORP</Nm></Dbtr>"
+        "<DbtrAgt>A</DbtrAgt><CdtrAgt>B</CdtrAgt>"
+        "</CdtTrfTxInf></Document>"
+    )
+    result = UCPIntegration().verify_iso20022_payment(
+        xml, ["SOMEONE ELSE"]
+    )
+    assert result.status == PaymentStatus.PENDING_REVIEW
+    assert result.can_proceed is False
+    assert any("exceeds max" in v for v in result.violations)
+
+
+def test_capability_advertises_kyc_verified_input():
+    capability = UCPIntegration.get_capability_definition()
+    operation = next(
+        op for op in capability["supported_operations"]
+        if op["name"] == "verify_iso20022_payment"
+    )
+    assert "kyc_verified" in operation["input"]
+
+
+def test_non_string_message_fails_closed_for_screening():
+    # None (or any non-str) must route to the refused-for-screening
+    # path, never raise before verdicts are computed (#88).
+    result = UCPIntegration().verify_iso20022_payment(None, ["SOMEONE ELSE"])
+    assert result.status == PaymentStatus.BLOCKED
+    assert result.can_proceed is False
+
+
+def test_hash_input_covers_non_string_payloads():
+    # Receipt hashing accepts dicts and scalars as well as strings; the
+    # non-string branches must stay exercised by the receipt suite (#88).
+    payload = {"amount": "1000", "currencies": ["USD"]}
+    digest = ReceiptGenerator.hash_input(payload)
+    expected = hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8", "backslashreplace")
+    ).hexdigest()
+    assert digest == expected
+    assert len(ReceiptGenerator.hash_input(12345)) == 64
