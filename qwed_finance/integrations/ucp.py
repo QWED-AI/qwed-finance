@@ -210,7 +210,8 @@ class UCPIntegration:
     def verify_iso20022_payment(
         self,
         xml_message: str,
-        sanctions_list: List[str] = None
+        sanctions_list: List[str] = None,
+        kyc_verified: bool = False,
     ) -> PaymentVerificationResult:
         """
         Verify an ISO 20022 payment message with sanctions screening.
@@ -218,11 +219,14 @@ class UCPIntegration:
         Uses Cross-Guard to combine:
         1. XML structure validation
         2. Sanctions screening on entities
-        3. Business rule validation
+        3. Business rule validation (max_amount, allowed_currencies)
         
         Args:
             xml_message: ISO 20022 XML (pacs.008, pain.001, etc.)
             sanctions_list: Optional list of sanctioned entities
+            kyc_verified: Explicit KYC context for this payment; without
+                it, require_kyc=True can never auto-approve (a pacs.008
+                carries no KYC evidence of its own, #67)
             
         Returns:
             PaymentVerificationResult
@@ -233,10 +237,12 @@ class UCPIntegration:
         # Validate XML structure
         msg_result = self.message.verify_iso20022_xml(xml_message, MessageType.PACS_008)
         
+        # Hash the whole document: a truncated preview left anything past
+        # the cutoff outside the receipt's input hash (#65).
         receipt1 = ReceiptGenerator.create_receipt(
             guard_name="UCP.verify_iso20022_structure",
             engine=VerificationEngine.XML_SCHEMA,
-            llm_output=xml_message[:100],
+            llm_output=xml_message,
             verified=msg_result.valid,
             violations=msg_result.errors
         )
@@ -304,21 +310,47 @@ class UCPIntegration:
                         self.audit_log.log(receipt2)
                         break
 
-        # Determine status: hits and unscreened outcomes block; review-only
-        # outcomes route to manual review (a "SANCTIONS REVIEW" must never
-        # match the BLOCKED branch by substring coincidence).
+        # Business limits (#67): max_amount/allowed_currencies were
+        # stored on init but this method never consulted them — an honest
+        # over-limit or disallowed-currency pacs.008 approved with zero
+        # violations. Wire the CrossGuard engine and keep its receipts.
+        # Business rules: positive_amount fails zero/negative settlements
+        # closed — neither is a legitimate payment (#88).
+        rules = self.cross_guard.check_business_rules(xml_message, {
+            "max_amount": self.max_amount,
+            "positive_amount": True,
+            "allowed_currencies": self.allowed_currencies,
+        })
+        violations.extend(rules.violations)
+        for rules_receipt in rules.receipts:
+            receipts.append(rules_receipt)
+            self.audit_log.log(rules_receipt)
+        
+        # KYC (#67): a pacs.008 carries no KYC evidence, so with
+        # require_kyc on, an ISO payment can never auto-approve unless
+        # the caller supplies explicit context.
+        if self.require_kyc and not kyc_verified:
+            violations.append(
+                "KYC verification required: ISO 20022 message carries no "
+                "KYC evidence"
+            )
+        
+        # Determine status: hits and unscreened outcomes block, and a
+        # deterministic config breach blocks only on a structurally valid
+        # document — a malformed message with extractable over-limit text
+        # is a manual-review case, not a policy verdict (#88). Everything
+        # else — SANCTIONS REVIEW, structural errors, missing KYC
+        # context — routes to manual review, never approval.
         if any(
             v.startswith(("SANCTIONS HIT", "SANCTIONS UNSCREENED"))
             for v in violations
-        ):
+        ) or (rules.policy_breach and msg_result.valid):
             status = PaymentStatus.BLOCKED
             can_proceed = False
         elif len(violations) == 0:
             status = PaymentStatus.APPROVED
             can_proceed = True
         else:
-            # Anything else — including SANCTIONS REVIEW — routes to
-            # manual review, never approval.
             status = PaymentStatus.PENDING_REVIEW
             can_proceed = False
         
@@ -339,11 +371,17 @@ class UCPIntegration:
     @classmethod
     def _xml_safe_for_screening(cls, xml_message: Any) -> bool:
         """Refuse documents unsafe to expand for screening."""
-        return (
-            isinstance(xml_message, str)
-            and not cls._DOCTYPE_RE.search(xml_message)
-            and len(xml_message.encode("utf-8")) <= cls._MAX_SCREEN_XML_BYTES
-        )
+        if not isinstance(xml_message, str):
+            return False
+        if cls._DOCTYPE_RE.search(xml_message):
+            return False
+        try:
+            byte_len = len(xml_message.encode("utf-8"))
+        except UnicodeEncodeError:
+            # Unpaired surrogates: malformed input is refused for
+            # screening rather than crashing the size check (#88).
+            return False
+        return byte_len <= cls._MAX_SCREEN_XML_BYTES
 
     def _fail_sanctions(
         self, violations: list, receipts: list, message: str
@@ -512,7 +550,8 @@ class UCPIntegration:
                     "description": "Verify ISO 20022 XML with sanctions screening",
                     "input": {
                         "xml_message": "string",
-                        "sanctions_list": "array (optional)"
+                        "sanctions_list": "array (optional)",
+                        "kyc_verified": "boolean (optional)"
                     },
                     "output": {
                         "can_proceed": "boolean",
