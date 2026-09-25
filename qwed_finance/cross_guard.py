@@ -480,16 +480,19 @@ class CrossGuard:
     ) -> bool:
         """True only for deterministic config breaches.
 
-        Unresolved amounts are structural failures (never policy), and
-        the currency side reports membership failure explicitly so a
-        missing-Ccy sibling can never reclassify a structural miss as a
-        breach. A zero or negative agreed amount under a configured
-        positive-amount rule is a deterministic breach (#88).
+        Structural precedence: an unresolved amount returns False first,
+        so an unparseable amount is never a policy verdict even when a
+        currency breach is also present — such documents route to manual
+        review, not BLOCKED. The currency side reports membership failure
+        explicitly so a missing-Ccy sibling can never reclassify a
+        structural miss as a breach. A zero or negative agreed amount
+        under a configured positive-amount rule is a deterministic
+        breach (#88).
         """
-        if membership_failed:
-            return True
         if amount_error is not None:
             return False
+        if membership_failed:
+            return True
         max_rule = business_rules.get("max_amount")
         min_rule = business_rules.get("min_amount")
         if business_rules.get("positive_amount") and amount <= 0:
@@ -663,6 +666,13 @@ class CrossGuard:
         if missing:
             violations.append(
                 "Currency missing on an IntrBkSttlmAmt occurrence"
+            )
+            guard_results[self._CHECK_CCY] = False
+        elif not currencies:
+            # Zero occurrences: nothing to disagree about — report the
+            # absence, not a fabricated disagreement (#88).
+            violations.append(
+                "Missing IntrBkSttlmAmt: no occurrence to verify currency"
             )
             guard_results[self._CHECK_CCY] = False
         elif len(currencies) != 1:

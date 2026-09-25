@@ -346,3 +346,30 @@ def test_unlimited_max_amount_does_not_crash():
     )
     assert result.status == PaymentStatus.APPROVED
     assert result.can_proceed is True
+
+
+def test_zero_occurrences_currency_violation_reports_absence():
+    # Zero occurrences is an absence, not a disagreement: the audit
+    # trail must not claim currencies conflicted when none exist (#88).
+    rules = CrossGuard().check_business_rules(
+        "<Document></Document>", {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert not any("must agree" in v for v in rules.violations)
+    assert any("no occurrence to verify currency" in v for v in rules.violations)
+
+
+def test_unparseable_amount_outranks_currency_breach():
+    # Structural precedence: an unparseable amount routes to manual
+    # review even when a disallowed currency is also present — never
+    # BLOCKED on a policy verdict the engine cannot fully ground (#88).
+    rules = CrossGuard().check_business_rules(
+        _pacs(amount="nan", ccy="RUB"),
+        {"allowed_currencies": ["USD"], "max_amount": 1000000},
+    )
+    assert rules.policy_breach is False
+    result = UCPIntegration().verify_iso20022_payment(
+        _pacs(amount="nan", ccy="RUB"), ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.PENDING_REVIEW
+    assert result.can_proceed is False
