@@ -646,70 +646,103 @@ class CrossGuard:
     ):
         """Require one agreed currency when the rule is configured.
 
-        First-match reads let repeated amounts with different currencies
-        pass; a missing currency with a configured allow-list fails
-        closed instead of silently skipping.
+        Each occurrence contributes at most one currency: agreeing
+        duplicate attributes collapse, while two disagreeing Ccy
+        attributes on one element conflict instead of letting attribute
+        order decide the verdict. A missing currency with a configured
+        allow-list fails closed instead of silently skipping.
 
         Returns (currencies-found-sorted, membership-failed): the breach
         flag is True only when one agreed present currency sits outside
-        the allow-list. Missing or disagreeing occurrences are structural
-        failures and must never classify as policy (#88).
+        the allow-list. Conflicting, missing, or disagreeing occurrences
+        are structural failures and must never classify as policy (#88).
+        """
+        currencies, missing, conflicting = self._collect_currencies(occurrences)
+        found = sorted(currencies)
+        if "allowed_currencies" not in business_rules:
+            return found, False
+        membership_failed = self._enforce_currency_allow_list(
+            found, missing, conflicting, business_rules, violations, guard_results
+        )
+        return found, membership_failed
+
+    @classmethod
+    def _collect_currencies(cls, occurrences):
+        """Collect one agreed currency per occurrence.
+
+        An occurrence whose Ccy attributes disagree (e.g. ns0:Ccy="USD"
+        alongside Ccy="RUB") is flagged as conflicting rather than
+        choosing by attribute order — the first match could be the
+        disallowed one (#88). Returns (currencies, missing, conflicting).
         """
         currencies = set()
         missing = False
+        conflicting = False
         for attrs, _text in occurrences:
             # Tokenize whole name=value pairs, never raw substrings: a
             # value like Note=" Ccy='USD'" or an attribute like NotCcy
             # must not read as the currency attribute, and the local
-            # name (after any namespace prefix) is what identifies Ccy
-            # (#88).
-            currency = None
-            for pair in self._ATTR_PAIR_RE.finditer(attrs):
-                if pair.group(1).rsplit(":", 1)[-1] == "Ccy":
-                    currency = pair.group(3)
-                    break
-            if currency is not None:
-                currencies.add(html.unescape(currency))
-            else:
+            # name (after any namespace prefix) is what identifies Ccy.
+            values = {
+                html.unescape(pair.group(3))
+                for pair in cls._ATTR_PAIR_RE.finditer(attrs)
+                if pair.group(1).rsplit(":", 1)[-1] == "Ccy"
+            }
+            if not values:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
                 missing = True
-        found = sorted(currencies)
-        if "allowed_currencies" not in business_rules:
-            return found, False
-        allowed = business_rules["allowed_currencies"]
-        if allowed is None:
-            # A None allow-list is a misconfiguration; fail closed as an
-            # empty list — no currency is a member of a list that does
-            # not exist (#88).
-            allowed = []
-        membership_failed = False
+            elif len(values) > 1:
+                conflicting = True
+            else:
+                currencies.add(next(iter(values)))
+        return currencies, missing, conflicting
+
+    def _enforce_currency_allow_list(
+        self, found, missing, conflicting, business_rules, violations, guard_results
+    ) -> bool:
+        """Record the currency verdict; True only for a membership breach.
+
+        Early returns keep every structural failure path flat —
+        conflict, absence, missing, and disagreement all return False
+        before the deterministic membership check (#88).
+        """
+        allowed = business_rules["allowed_currencies"] or []
+        if conflicting:
+            violations.append(
+                "Conflicting currency attributes on one "
+                "IntrBkSttlmAmt occurrence"
+            )
+            guard_results[self._CHECK_CCY] = False
+            return False
         if missing:
             violations.append(
                 "Currency missing on an IntrBkSttlmAmt occurrence"
             )
             guard_results[self._CHECK_CCY] = False
-        elif not currencies:
+            return False
+        if not found:
             # Zero occurrences: nothing to disagree about — report the
             # absence, not a fabricated disagreement (#88).
             violations.append(
                 "Missing IntrBkSttlmAmt: no occurrence to verify currency"
             )
             guard_results[self._CHECK_CCY] = False
-        elif len(currencies) != 1:
+            return False
+        if len(found) != 1:
             violations.append(
                 "Currency must agree across IntrBkSttlmAmt occurrences"
             )
             guard_results[self._CHECK_CCY] = False
-        elif found[0] not in allowed:
+            return False
+        if found[0] not in allowed:
             violations.append(
                 f"Currency {found[0]} not in allowed list"
             )
             guard_results[self._CHECK_CCY] = False
-            membership_failed = True
-        else:
-            guard_results[self._CHECK_CCY] = True
-        return found, membership_failed
+            return True
+        guard_results[self._CHECK_CCY] = True
+        return False
 
     def _extract_xml_value(self, xml: str, element: str) -> Optional[float]:
         """Extract numeric value from XML element"""

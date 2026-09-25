@@ -440,3 +440,42 @@ def test_qualified_currency_attribute_is_recognized():
     )
     assert result.status == PaymentStatus.APPROVED
     assert result.can_proceed is True
+
+
+def test_conflicting_currency_attributes_rejected():
+    # ns0:Ccy="USD" plus Ccy="RUB" on one element: attribute order must
+    # not decide the verdict — the disallowed RUB cannot be shadowed by
+    # an allowed prefixed duplicate (#88).
+    conflict = (
+        _pacs()
+        .replace("<Document>", '<Document xmlns:ns0="urn:test">')
+        .replace(
+            '<IntrBkSttlmAmt Ccy="USD">',
+            '<IntrBkSttlmAmt ns0:Ccy="USD" Ccy="RUB">',
+        )
+    )
+    rules = CrossGuard().check_business_rules(
+        conflict, {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert any("Conflicting" in v for v in rules.violations)
+    assert rules.policy_breach is False
+    result = UCPIntegration().verify_iso20022_payment(
+        conflict, ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.PENDING_REVIEW
+    assert result.can_proceed is False
+
+    # Equal duplicates agree: not a conflict, still approvable.
+    same = (
+        _pacs()
+        .replace("<Document>", '<Document xmlns:ns0="urn:test">')
+        .replace(
+            '<IntrBkSttlmAmt Ccy="USD">',
+            '<IntrBkSttlmAmt ns0:Ccy="USD" Ccy="USD">',
+        )
+    )
+    ok = UCPIntegration().verify_iso20022_payment(
+        same, ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert ok.status == PaymentStatus.APPROVED
