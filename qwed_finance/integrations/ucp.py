@@ -210,7 +210,8 @@ class UCPIntegration:
     def verify_iso20022_payment(
         self,
         xml_message: str,
-        sanctions_list: List[str] = None
+        sanctions_list: List[str] = None,
+        kyc_verified: bool = False,
     ) -> PaymentVerificationResult:
         """
         Verify an ISO 20022 payment message with sanctions screening.
@@ -218,11 +219,14 @@ class UCPIntegration:
         Uses Cross-Guard to combine:
         1. XML structure validation
         2. Sanctions screening on entities
-        3. Business rule validation
+        3. Business rule validation (max_amount, allowed_currencies)
         
         Args:
             xml_message: ISO 20022 XML (pacs.008, pain.001, etc.)
             sanctions_list: Optional list of sanctioned entities
+            kyc_verified: Explicit KYC context for this payment; without
+                it, require_kyc=True can never auto-approve (a pacs.008
+                carries no KYC evidence of its own, #67)
             
         Returns:
             PaymentVerificationResult
@@ -233,10 +237,12 @@ class UCPIntegration:
         # Validate XML structure
         msg_result = self.message.verify_iso20022_xml(xml_message, MessageType.PACS_008)
         
+        # Hash the whole document: a truncated preview left anything past
+        # the cutoff outside the receipt's input hash (#65).
         receipt1 = ReceiptGenerator.create_receipt(
             guard_name="UCP.verify_iso20022_structure",
             engine=VerificationEngine.XML_SCHEMA,
-            llm_output=xml_message[:100],
+            llm_output=xml_message,
             verified=msg_result.valid,
             violations=msg_result.errors
         )
@@ -304,21 +310,46 @@ class UCPIntegration:
                         self.audit_log.log(receipt2)
                         break
 
-        # Determine status: hits and unscreened outcomes block; review-only
-        # outcomes route to manual review (a "SANCTIONS REVIEW" must never
-        # match the BLOCKED branch by substring coincidence).
+        # Business limits (#67): max_amount/allowed_currencies were
+        # stored on init but this method never consulted them — an honest
+        # over-limit or disallowed-currency pacs.008 approved with zero
+        # violations. Wire the CrossGuard engine and keep its receipts.
+        rules = self.cross_guard.check_business_rules(xml_message, {
+            "max_amount": self.max_amount,
+            "allowed_currencies": self.allowed_currencies,
+        })
+        violations.extend(rules.violations)
+        for rules_receipt in rules.receipts:
+            receipts.append(rules_receipt)
+            self.audit_log.log(rules_receipt)
+        
+        # KYC (#67): a pacs.008 carries no KYC evidence, so with
+        # require_kyc on, an ISO payment can never auto-approve unless
+        # the caller supplies explicit context.
+        if self.require_kyc and not kyc_verified:
+            violations.append(
+                "KYC verification required: ISO 20022 message carries no "
+                "KYC evidence"
+            )
+        
+        # Determine status: hits and unscreened outcomes block; a
+        # deterministic config breach (over-limit, disallowed currency)
+        # blocks outright rather than queueing for review; everything
+        # else — including SANCTIONS REVIEW, structural errors, and
+        # missing KYC context — routes to manual review, never approval.
         if any(
             v.startswith(("SANCTIONS HIT", "SANCTIONS UNSCREENED"))
             for v in violations
         ):
             status = PaymentStatus.BLOCKED
             can_proceed = False
+        elif rules.policy_breach:
+            status = PaymentStatus.BLOCKED
+            can_proceed = False
         elif len(violations) == 0:
             status = PaymentStatus.APPROVED
             can_proceed = True
         else:
-            # Anything else — including SANCTIONS REVIEW — routes to
-            # manual review, never approval.
             status = PaymentStatus.PENDING_REVIEW
             can_proceed = False
         

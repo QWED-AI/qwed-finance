@@ -24,6 +24,10 @@ class CrossGuardResult:
     violations: List[str]
     receipts: List[VerificationReceipt]
     screened_entities: List[str] = field(default_factory=list)
+    #: True when a configured rule was deterministically breached (amount
+    #: outside configured bounds, currency outside the allow-list) — a
+    #: policy violation, distinct from structural defects (#67).
+    policy_breach: bool = False
     
 
 class CrossGuard:
@@ -352,10 +356,13 @@ class CrossGuard:
         msg_result = self.message.verify_iso20022_xml(xml_string, MessageType.PACS_008)
         guard_results["MessageGuard"] = msg_result.valid
         
+        # Hash the whole document: a truncated llm_output left everything
+        # past the cutoff — including the operative currency — outside the
+        # receipt's input hash (#65).
         receipt1 = ReceiptGenerator.create_receipt(
             guard_name="MessageGuard.verify_iso20022_xml",
             engine=VerificationEngine.XML_SCHEMA,
-            llm_output=xml_string[:200],
+            llm_output=xml_string,
             verified=msg_result.valid,
             violations=msg_result.errors
         )
@@ -364,9 +371,46 @@ class CrossGuard:
         if not msg_result.valid:
             violations.extend(msg_result.errors)
         
-        # Step 2: Extract values and check business rules (fail-closed
-        # amount and currency agreement, #66).
-        amount, amount_error = self._resolve_agreed_amount(xml_string)
+        # Step 2: Amount and currency rules (fail-closed agreement, #66;
+        # operative-value evidence recorded on the business receipt, #65).
+        rules_result = self.check_business_rules(xml_string, business_rules)
+        violations.extend(rules_result.violations)
+        guard_results.update(rules_result.guard_results)
+        receipts.extend(rules_result.receipts)
+        
+        passed = all(guard_results.values())
+        
+        return CrossGuardResult(
+            passed=passed,
+            guard_results=guard_results,
+            violations=violations,
+            receipts=receipts,
+            policy_breach=rules_result.policy_breach,
+        )
+    
+    def check_business_rules(
+        self,
+        xml_string: str,
+        business_rules: Dict[str, Any]
+    ) -> CrossGuardResult:
+        """Amount and currency rules over settlement values.
+
+        Structure is validated by the caller — verify_iso20022_payment
+        needs these verdicts without a second well-formedness pass (#67).
+        The business receipt hashes the operative amount, the agreed
+        currencies, and the configured rules, so a verdict is never keyed
+        to a truncated document prefix (#65).
+
+        policy_breach is set only for deterministic config breaches (an
+        agreed value outside configured bounds, one agreed currency
+        outside the allow-list); missing or disagreeing values are
+        structural failures, never policy verdicts.
+        """
+        violations = []
+        guard_results = {}
+        
+        occurrences = self._extract_xml_occurrences(xml_string)
+        amount, amount_error = self._resolve_agreed_amount(occurrences)
         if amount_error is not None:
             violations.append(amount_error)
             guard_results[self._CHECK_AMOUNT] = False
@@ -383,19 +427,50 @@ class CrossGuard:
             self._check_amount_bounds(
                 amount, business_rules, violations, guard_results
             )
-
-        # Check currency
-        self._check_currency_agreement(
-            xml_string, business_rules, violations, guard_results
+        
+        currencies = self._check_currency_agreement(
+            occurrences, business_rules, violations, guard_results
         )
         
-        passed = all(guard_results.values())
+        policy_breach = False
+        if amount_error is None:
+            if "max_amount" in business_rules and amount > Decimal(
+                str(business_rules["max_amount"])
+            ):
+                policy_breach = True
+            if "min_amount" in business_rules and amount < Decimal(
+                str(business_rules["min_amount"])
+            ):
+                policy_breach = True
+        if (
+            len(currencies) == 1
+            and "allowed_currencies" in business_rules
+            and currencies[0] not in business_rules["allowed_currencies"]
+        ):
+            policy_breach = True
         
+        passed = all(guard_results.values())
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name="CrossGuard.business_rules",
+            engine=VerificationEngine.DECIMAL,
+            llm_output=(
+                f"amount="
+                f"{amount if amount_error is None else amount_error}; "
+                f"currencies={','.join(currencies)}; rules={business_rules}"
+            ),
+            verified=passed,
+            computed_value=(
+                f"amount={amount}" if amount_error is None else "unresolved"
+            ),
+            violations=violations,
+            metadata={"currencies": currencies},
+        )
         return CrossGuardResult(
             passed=passed,
             guard_results=guard_results,
             violations=violations,
-            receipts=receipts
+            receipts=[receipt],
+            policy_breach=policy_breach,
         )
     
     #: Guard-result keys for the ISO amount/currency agreement checks.
@@ -460,14 +535,14 @@ class CrossGuard:
             return None
         return value if value.is_finite() else None
 
-    def _resolve_agreed_amount(self, xml_string: str):
-        """Agreed IntrBkSttlmAmt across all occurrences, or an error.
+    def _resolve_agreed_amount(self, occurrences):
+        """Agreed IntrBkSttlmAmt across all extracted occurrences, or an error.
 
         Returns (Decimal, None) on agreement, (None, violation-message)
         for missing/unparseable/non-finite/disagreeing amounts.
         """
         raw_amounts = [
-            text for _, text in self._extract_xml_occurrences(xml_string)
+            text for _, text in occurrences
         ]
         if not raw_amounts:
             return None, "Missing IntrBkSttlmAmt: amount cannot be verified"
@@ -505,18 +580,20 @@ class CrossGuard:
             else:
                 guard_results[self._CHECK_MIN] = True
 
-    def _check_currency_agreement(self, xml_string, business_rules, violations, guard_results) -> None:
+    def _check_currency_agreement(
+        self, occurrences, business_rules, violations, guard_results
+    ) -> List[str]:
         """Require one agreed currency when the rule is configured.
 
         First-match reads let repeated amounts with different currencies
         pass; a missing currency with a configured allow-list fails
-        closed instead of silently skipping.
+        closed instead of silently skipping. Returns the currencies found
+        (sorted) as operative evidence for the receipt and the breach
+        classification.
         """
-        if "allowed_currencies" not in business_rules:
-            return
         currencies = set()
         missing = False
-        for attrs, _text in self._extract_xml_occurrences(xml_string):
+        for attrs, _text in occurrences:
             ccy = re.search(r"""Ccy\s*=\s*(["'])([^"']+)\1""", attrs)
             if ccy:
                 currencies.add(ccy.group(2))
@@ -524,6 +601,9 @@ class CrossGuard:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
                 missing = True
+        found = sorted(currencies)
+        if "allowed_currencies" not in business_rules:
+            return found
         if missing:
             violations.append(
                 "Currency missing on an IntrBkSttlmAmt occurrence"
@@ -534,13 +614,14 @@ class CrossGuard:
                 "Currency must agree across IntrBkSttlmAmt occurrences"
             )
             guard_results[self._CHECK_CCY] = False
-        elif next(iter(currencies)) not in business_rules["allowed_currencies"]:
+        elif found[0] not in business_rules["allowed_currencies"]:
             violations.append(
-                f"Currency {next(iter(currencies))} not in allowed list"
+                f"Currency {found[0]} not in allowed list"
             )
             guard_results[self._CHECK_CCY] = False
         else:
             guard_results[self._CHECK_CCY] = True
+        return found
 
     def _extract_xml_value(self, xml: str, element: str) -> Optional[float]:
         """Extract numeric value from XML element"""
