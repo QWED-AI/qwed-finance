@@ -403,3 +403,40 @@ def test_ccy_attribute_name_boundary_enforced():
     )
     assert result.status == PaymentStatus.BLOCKED
     assert result.can_proceed is False
+
+
+def test_quoted_decoy_ccy_inside_attribute_value_is_ignored():
+    # Note=" Ccy='USD'" carries a decoy inside a quoted value: the
+    # extractor must read the real Ccy attribute pair, not raw text (#88).
+    decoy = _pacs().replace(
+        '<IntrBkSttlmAmt Ccy="USD">',
+        '<IntrBkSttlmAmt Note=" Ccy=\'USD\'" Ccy="RUB">',
+    )
+    rules = CrossGuard().check_business_rules(
+        decoy, {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert rules.policy_breach is True
+    result = UCPIntegration().verify_iso20022_payment(
+        decoy, ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.BLOCKED
+
+
+def test_qualified_currency_attribute_is_recognized():
+    # ns0:Ccy is the currency attribute under a namespace prefix: a
+    # structurally clean payment must approve, not degrade to review (#88).
+    xml = (
+        _pacs()
+        .replace("<Document>", '<Document xmlns:ns0="urn:test">')
+        .replace(
+            '<IntrBkSttlmAmt Ccy="USD">',
+            '<ns0:IntrBkSttlmAmt ns0:Ccy="USD">',
+        )
+        .replace("</IntrBkSttlmAmt>", "</ns0:IntrBkSttlmAmt>")
+    )
+    result = UCPIntegration().verify_iso20022_payment(
+        xml, ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.APPROVED
+    assert result.can_proceed is True

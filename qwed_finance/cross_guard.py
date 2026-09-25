@@ -520,6 +520,12 @@ class CrossGuard:
         r"(?:/\s*>|>(.*?)</(?:[\w.-]+:)?IntrBkSttlmAmt\s*>)",
         re.DOTALL,
     )
+    #: Consumes one complete name="value" pair (quote-aware) so a
+    #: decoy Ccy inside another attribute's value is never tokenized
+    #: as an attribute name (#88).
+    _ATTR_PAIR_RE = re.compile(
+        r"""(?:\s|^)([\w.:-]+)\s*=\s*(["'])(.*?)\2""", re.DOTALL
+    )
     _CDATA_RE = re.compile(r"^\s*<!\[CDATA\[(.*)\]\]>\s*$", re.DOTALL)
     _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
     #: One CDATA section at a time: judging sections individually keeps a
@@ -652,15 +658,18 @@ class CrossGuard:
         currencies = set()
         missing = False
         for attrs, _text in occurrences:
-            # Attribute-boundary lookbehind: a plain Ccy pattern matches
-            # the Ccy substring inside names like NotCcy, letting a
-            # spoofed NotCcy="USD" mask the real Ccy="RUB" and approve a
-            # disallowed currency (#88).
-            ccy = re.search(
-                r"""(?<!\S)Ccy\s*=\s*(["'])([^"']+)\1""", attrs
-            )
-            if ccy:
-                currencies.add(html.unescape(ccy.group(2)))
+            # Tokenize whole name=value pairs, never raw substrings: a
+            # value like Note=" Ccy='USD'" or an attribute like NotCcy
+            # must not read as the currency attribute, and the local
+            # name (after any namespace prefix) is what identifies Ccy
+            # (#88).
+            currency = None
+            for pair in self._ATTR_PAIR_RE.finditer(attrs):
+                if pair.group(1).rsplit(":", 1)[-1] == "Ccy":
+                    currency = pair.group(3)
+                    break
+            if currency is not None:
+                currencies.add(html.unescape(currency))
             else:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
