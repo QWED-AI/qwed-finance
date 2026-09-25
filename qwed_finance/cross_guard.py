@@ -692,10 +692,14 @@ class CrossGuard:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
                 missing = True
-            elif len(values) > 1:
-                conflicting = True
             else:
-                currencies.add(next(iter(values)))
+                if len(values) > 1:
+                    # The conflict drives the verdict, but every value
+                    # stays in the evidence: receipts must show which
+                    # currencies caused the check to fail, or distinct
+                    # conflicts share one business-receipt hash (#88).
+                    conflicting = True
+                currencies.update(values)
         return currencies, missing, conflicting
 
     def _enforce_currency_allow_list(

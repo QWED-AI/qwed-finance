@@ -479,3 +479,26 @@ def test_conflicting_currency_attributes_rejected():
         same, ["SOMEONE ELSE"], kyc_verified=True
     )
     assert ok.status == PaymentStatus.APPROVED
+
+
+def test_conflicting_currencies_recorded_in_receipt_evidence():
+    # Both conflicting values belong in the receipt: distinct conflicts
+    # must not collapse to one business-receipt hash with empty
+    # metadata, or auditors cannot see what caused the failure (#88).
+    first = CrossGuard().check_business_rules(
+        _pacs().replace("<Document>", '<Document xmlns:ns0="urn:test">').replace(
+            '<IntrBkSttlmAmt Ccy="USD">',
+            '<IntrBkSttlmAmt ns0:Ccy="USD" Ccy="RUB">',
+        ),
+        {"allowed_currencies": _ALLOWED},
+    )
+    assert first.receipts[0].metadata["currencies"] == ["RUB", "USD"]
+    second = CrossGuard().check_business_rules(
+        _pacs().replace("<Document>", '<Document xmlns:ns0="urn:test">').replace(
+            '<IntrBkSttlmAmt Ccy="USD">',
+            '<IntrBkSttlmAmt ns0:Ccy="USD" Ccy="EUR">',
+        ),
+        {"allowed_currencies": _ALLOWED},
+    )
+    assert second.receipts[0].metadata["currencies"] == ["EUR", "USD"]
+    assert first.receipts[0].input_hash != second.receipts[0].input_hash
