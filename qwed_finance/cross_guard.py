@@ -652,7 +652,13 @@ class CrossGuard:
         currencies = set()
         missing = False
         for attrs, _text in occurrences:
-            ccy = re.search(r"""Ccy\s*=\s*(["'])([^"']+)\1""", attrs)
+            # Attribute-boundary lookbehind: a plain Ccy pattern matches
+            # the Ccy substring inside names like NotCcy, letting a
+            # spoofed NotCcy="USD" mask the real Ccy="RUB" and approve a
+            # disallowed currency (#88).
+            ccy = re.search(
+                r"""(?<!\S)Ccy\s*=\s*(["'])([^"']+)\1""", attrs
+            )
             if ccy:
                 currencies.add(html.unescape(ccy.group(2)))
             else:
@@ -662,6 +668,12 @@ class CrossGuard:
         found = sorted(currencies)
         if "allowed_currencies" not in business_rules:
             return found, False
+        allowed = business_rules["allowed_currencies"]
+        if allowed is None:
+            # A None allow-list is a misconfiguration; fail closed as an
+            # empty list — no currency is a member of a list that does
+            # not exist (#88).
+            allowed = []
         membership_failed = False
         if missing:
             violations.append(
@@ -680,7 +692,7 @@ class CrossGuard:
                 "Currency must agree across IntrBkSttlmAmt occurrences"
             )
             guard_results[self._CHECK_CCY] = False
-        elif found[0] not in business_rules["allowed_currencies"]:
+        elif found[0] not in allowed:
             violations.append(
                 f"Currency {found[0]} not in allowed list"
             )

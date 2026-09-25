@@ -373,3 +373,33 @@ def test_unparseable_amount_outranks_currency_breach():
     )
     assert result.status == PaymentStatus.PENDING_REVIEW
     assert result.can_proceed is False
+
+
+def test_none_allow_list_fails_closed_without_crash():
+    # A None allow-list is a misconfiguration: membership against it
+    # must fail closed (empty list), never raise TypeError (#88).
+    rules = CrossGuard().check_business_rules(
+        _pacs(), {"allowed_currencies": None}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert any("not in allowed list" in v for v in rules.violations)
+
+
+def test_ccy_attribute_name_boundary_enforced():
+    # NotCcy="USD" must never be read as the currency attribute: the
+    # spoofed attribute is a substring match, the real Ccy="RUB" is
+    # what the business rule must judge (#88).
+    spoofed = _pacs().replace(
+        '<IntrBkSttlmAmt Ccy="USD">',
+        '<IntrBkSttlmAmt NotCcy="USD" Ccy="RUB">',
+    )
+    rules = CrossGuard().check_business_rules(
+        spoofed, {"allowed_currencies": _ALLOWED}
+    )
+    assert rules.guard_results.get("BusinessRule.currency") is False
+    assert rules.policy_breach is True
+    result = UCPIntegration().verify_iso20022_payment(
+        spoofed, ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.BLOCKED
+    assert result.can_proceed is False
