@@ -1,6 +1,11 @@
 """
-Verification Receipt - Cryptographic proof of verification for audit trails
-Required for regulatory compliance (SEC, OCC, FinCEN)
+Verification Receipt - tamper-evident evidence records for audit trails.
+
+Integrity is checked with VerificationReceipt.get_signature: HMAC-SHA256
+over the full canonical receipt, keyed by the verifier instance. This is
+tamper evidence for holders of the signing key only — it carries no issuer
+identity and is not third-party-verifiable attestation; the regulator-facing
+attestation format is tracked in #37.
 """
 
 from dataclasses import dataclass, field
@@ -8,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from enum import Enum
 import hashlib
+import hmac
 import json
 import uuid
 
@@ -33,12 +39,15 @@ class VerificationStatus(Enum):
 @dataclass
 class VerificationReceipt:
     """
-    Cryptographic proof of verification for audit trails.
-    
+    Evidence record of a verification run for audit trails.
+
     Every verification generates a receipt that can be:
     - Stored in audit logs
-    - Submitted to regulators
     - Used for dispute resolution
+    - Checked for in-place tampering via get_signature (key holders)
+
+    get_signature proves integrity to holders of the signing key; it does
+    not establish issuer identity or third-party verifiability (see #37).
     """
     
     # Unique identifiers
@@ -96,19 +105,31 @@ class VerificationReceipt:
         """Serialize receipt to JSON"""
         return json.dumps(self.to_dict(), indent=indent)
     
-    def get_signature(self) -> str:
+    def get_signature(self, key: bytes) -> str:
         """
-        Generate cryptographic signature of the receipt.
-        Can be used to verify receipt hasn't been tampered with.
+        HMAC-SHA256 signature over the full canonical receipt.
+
+        Signs every field returned by to_dict() (canonical JSON, sorted
+        keys), so mutating any of them — computed_value, llm_value,
+        difference, status, violations, proof_steps, formula_used,
+        metadata — changes the signature (#44).
+
+        The key must be held by the verifier instance that issues or
+        checks receipts; there is intentionally no default key. The
+        previous unkeyed SHA-256 over a 5-field subset let anyone who
+        touched a receipt alter it — or mint one wholesale — without
+        detection, which is weaker than no signature at all (#44).
+
+        Fields that are not JSON-serializable (e.g. exotic metadata
+        values) raise TypeError, matching to_json(): a receipt that
+        cannot be serialized to a canonical artifact must not sign.
+
+        Tamper evidence only: anyone without the key cannot forge or
+        validate signatures, but this envelope carries no issuer
+        identity — third-party-verifiable attestation is tracked in #37.
         """
-        content = json.dumps({
-            "receipt_id": self.receipt_id,
-            "timestamp": self.timestamp,
-            "input_hash": self.input_hash,
-            "verified": self.verified,
-            "engine_used": self.engine_used.value
-        }, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
+        content = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hmac.new(key, content.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class ReceiptGenerator:
