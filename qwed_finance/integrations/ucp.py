@@ -314,8 +314,11 @@ class UCPIntegration:
         # stored on init but this method never consulted them — an honest
         # over-limit or disallowed-currency pacs.008 approved with zero
         # violations. Wire the CrossGuard engine and keep its receipts.
+        # Business rules: positive_amount fails zero/negative settlements
+        # closed — neither is a legitimate payment (#88).
         rules = self.cross_guard.check_business_rules(xml_message, {
             "max_amount": self.max_amount,
+            "positive_amount": True,
             "allowed_currencies": self.allowed_currencies,
         })
         violations.extend(rules.violations)

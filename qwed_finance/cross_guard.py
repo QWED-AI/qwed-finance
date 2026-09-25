@@ -462,8 +462,11 @@ class CrossGuard:
                 (self._CHECK_MAX, "max_amount"),
                 (self._CHECK_MIN, "min_amount"),
             ):
-                if rule in business_rules:
+                # A None bound means "no limit" — unconfigured, no verdict.
+                if business_rules.get(rule) is not None:
                     guard_results[key] = False
+            if business_rules.get("positive_amount"):
+                guard_results[self._CHECK_POSITIVE] = False
             return None, amount_error
         guard_results[self._CHECK_AMOUNT] = True
         self._check_amount_bounds(
@@ -480,19 +483,20 @@ class CrossGuard:
         Unresolved amounts are structural failures (never policy), and
         the currency side reports membership failure explicitly so a
         missing-Ccy sibling can never reclassify a structural miss as a
-        breach (#88).
+        breach. A zero or negative agreed amount under a configured
+        positive-amount rule is a deterministic breach (#88).
         """
         if membership_failed:
             return True
         if amount_error is not None:
             return False
-        if "max_amount" in business_rules and amount > Decimal(
-            str(business_rules["max_amount"])
-        ):
+        max_rule = business_rules.get("max_amount")
+        min_rule = business_rules.get("min_amount")
+        if business_rules.get("positive_amount") and amount <= 0:
             return True
-        if "min_amount" in business_rules and amount < Decimal(
-            str(business_rules["min_amount"])
-        ):
+        if max_rule is not None and amount > Decimal(str(max_rule)):
+            return True
+        if min_rule is not None and amount < Decimal(str(min_rule)):
             return True
         return False
     
@@ -500,6 +504,7 @@ class CrossGuard:
     _CHECK_AMOUNT = "BusinessRule.amount"
     _CHECK_MAX = "BusinessRule.max_amount"
     _CHECK_MIN = "BusinessRule.min_amount"
+    _CHECK_POSITIVE = "BusinessRule.positive_amount"
     _CHECK_CCY = "BusinessRule.currency"
 
     #: Matches one IntrBkSttlmAmt element: attribute string plus inner
@@ -589,26 +594,39 @@ class CrossGuard:
         return parsed[0], None
 
     def _check_amount_bounds(self, amount, business_rules, violations, guard_results) -> None:
-        """Apply configured max/min bound checks to an agreed amount.
+        """Apply configured max/min/positive checks to an agreed amount.
 
         Guard keys are recorded only for configured rules: an unconfigured
-        bound must stay absent, never read as a passed check.
+        bound must stay absent, never read as a passed check. A None bound
+        means "no limit" and is skipped instead of crashing the Decimal
+        conversion (#88).
         """
-        if "max_amount" not in business_rules and "min_amount" not in business_rules:
+        max_rule = business_rules.get("max_amount")
+        min_rule = business_rules.get("min_amount")
+        positive_rule = business_rules.get("positive_amount")
+        if max_rule is None and min_rule is None and not positive_rule:
             return
-        if "max_amount" in business_rules:
-            if amount > Decimal(str(business_rules["max_amount"])):
+
+        if positive_rule:
+            if amount <= 0:
+                violations.append("Amount must be positive")
+                guard_results[self._CHECK_POSITIVE] = False
+            else:
+                guard_results[self._CHECK_POSITIVE] = True
+
+        if max_rule is not None:
+            if amount > Decimal(str(max_rule)):
                 violations.append(
-                    f"Amount {amount} exceeds max {business_rules['max_amount']}"
+                    f"Amount {amount} exceeds max {max_rule}"
                 )
                 guard_results[self._CHECK_MAX] = False
             else:
                 guard_results[self._CHECK_MAX] = True
 
-        if "min_amount" in business_rules:
-            if amount < Decimal(str(business_rules["min_amount"])):
+        if min_rule is not None:
+            if amount < Decimal(str(min_rule)):
                 violations.append(
-                    f"Amount {amount} below min {business_rules['min_amount']}"
+                    f"Amount {amount} below min {min_rule}"
                 )
                 guard_results[self._CHECK_MIN] = False
             else:

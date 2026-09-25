@@ -121,9 +121,12 @@ class ReceiptGenerator:
     def hash_input(input_data: Any) -> str:
         """Generate SHA-256 hash of input data.
 
-        backslashreplace: unpaired surrogates appear in malformed input
+        surrogatepass: unpaired surrogates appear in malformed input
         exactly when validation is about to reject it — hashing must
-        never raise instead of returning the rejected result (#88).
+        never raise instead of returning the rejected result, and must
+        stay injective: backslashreplace collapses an unpaired
+        surrogate and the literal "\ud800" text to one hash, letting
+        two different documents share an audited receipt (#88).
         """
         if isinstance(input_data, str):
             content = input_data
@@ -132,7 +135,7 @@ class ReceiptGenerator:
         else:
             content = str(input_data)
         return hashlib.sha256(
-            content.encode("utf-8", "backslashreplace")
+            content.encode("utf-8", "surrogatepass")
         ).hexdigest()
     
     @staticmethod

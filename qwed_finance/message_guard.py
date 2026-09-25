@@ -183,7 +183,12 @@ class MessageGuard:
         declarations on str input, which made valid messages carrying
         `<?xml ... encoding=...?>` fail closed incorrectly. defusedxml
         refuses DTD entity payloads (CWE-776) alongside parse errors.
+        Non-string input fails closed before the encode(): AttributeError
+        is not a parse error, so raising it would crash environments
+        without lxml instead of rejecting the message (#88).
         """
+        if not isinstance(xml_string, str):
+            return None
         try:
             return DET.fromstring(xml_string.encode("utf-8"))
         except (ET.ParseError, DefusedXmlException, UnicodeEncodeError):

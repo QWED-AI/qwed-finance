@@ -11,6 +11,7 @@ import json
 
 from qwed_finance.cross_guard import CrossGuard
 from qwed_finance.integrations.ucp import PaymentStatus, UCPIntegration
+from qwed_finance.message_guard import MessageGuard
 from qwed_finance.models.receipt import ReceiptGenerator
 
 _ALLOWED = ["USD", "EUR", "GBP"]
@@ -292,7 +293,56 @@ def test_hash_input_covers_non_string_payloads():
     payload = {"amount": "1000", "currencies": ["USD"]}
     digest = ReceiptGenerator.hash_input(payload)
     expected = hashlib.sha256(
-        json.dumps(payload, sort_keys=True).encode("utf-8", "backslashreplace")
+        json.dumps(payload, sort_keys=True).encode("utf-8", "surrogatepass")
     ).hexdigest()
     assert digest == expected
     assert len(ReceiptGenerator.hash_input(12345)) == 64
+    # Injective encoding: an unpaired surrogate and the literal escape
+    # text are different documents and must never share a receipt hash.
+    assert ReceiptGenerator.hash_input(
+        "\ud800"
+    ) != ReceiptGenerator.hash_input("\\ud800")
+
+
+def test_parse_xml_non_string_fails_closed():
+    # Environments without lxml reach _parse_xml directly; non-str input
+    # must return None (malformed) instead of raising AttributeError (#88).
+    assert MessageGuard._parse_xml(None) is None
+    assert MessageGuard._parse_xml(123) is None
+
+
+def test_zero_and_negative_amounts_block():
+    # Neither zero nor a negative settlement is a legitimate payment: with
+    # the positive-amount rule both are deterministic breaches (#88).
+    for amount in ("0", "-100"):
+        result = UCPIntegration().verify_iso20022_payment(
+            _pacs(amount=amount), ["SOMEONE ELSE"], kyc_verified=True
+        )
+        assert result.status == PaymentStatus.BLOCKED, amount
+        assert result.can_proceed is False
+        assert any("positive" in v for v in result.violations), amount
+
+
+def test_positive_amount_guard_reports_both_verdicts():
+    rules = CrossGuard().check_business_rules(
+        _pacs(amount="100"),
+        {"allowed_currencies": _ALLOWED, "positive_amount": True},
+    )
+    assert rules.guard_results.get("BusinessRule.positive_amount") is True
+    assert rules.policy_breach is False
+    zero = CrossGuard().check_business_rules(
+        _pacs(amount="0"),
+        {"allowed_currencies": _ALLOWED, "positive_amount": True},
+    )
+    assert zero.guard_results.get("BusinessRule.positive_amount") is False
+    assert zero.policy_breach is True
+
+
+def test_unlimited_max_amount_does_not_crash():
+    # None means "no limit": the bound is skipped, not converted to
+    # Decimal("None"), and a clean payment still approves (#88).
+    result = UCPIntegration(max_transaction_amount=None).verify_iso20022_payment(
+        _pacs(amount="500"), ["SOMEONE ELSE"], kyc_verified=True
+    )
+    assert result.status == PaymentStatus.APPROVED
+    assert result.can_proceed is True
