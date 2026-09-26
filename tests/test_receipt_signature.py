@@ -154,6 +154,46 @@ def test_metadata_key_normalization_collision_raises():
         receipt.get_signature(VERIFIER_KEY)
 
 
+def test_nested_metadata_keys_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"nested": {"flag": True, 1: "value"}}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"nested": {"flag": True, "1": "value"}}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_metadata_keys_inside_list_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"items": [{"a": 1, 2: "b"}]}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"items": [{"a": 1, "2": "b"}]}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_bool_and_none_metadata_keys_use_json_spelling():
+    receipt = make_receipt()
+    receipt.metadata = {True: "a", None: "b", "True": "c"}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"true": "a", "null": "b", "True": "c"}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_json_spelling_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {True: "a", "true": "b"}
+    with pytest.raises(TypeError):
+        receipt.to_json()
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_nested_key_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {"nested": {1: "a", "1": "b"}}
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
 def test_requires_key():
     receipt = make_receipt()
     key_param = inspect.signature(receipt.get_signature).parameters["key"]

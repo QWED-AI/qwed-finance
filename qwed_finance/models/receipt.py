@@ -36,6 +36,52 @@ class VerificationStatus(Enum):
     ERROR = "error"
 
 
+def _json_key_spelling(key: Any) -> str:
+    """Spell a mapping key exactly as json.dumps exports string keys."""
+    if isinstance(key, str):
+        return key
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if key is None:
+        return "null"
+    if isinstance(key, float):
+        if key != key:
+            return "NaN"
+        if key == float("inf"):
+            return "Infinity"
+        if key == float("-inf"):
+            return "-Infinity"
+    return str(key)
+
+
+def _normalize_metadata_keys(value: Any) -> Any:
+    """Recursively rewrite mapping keys to their JSON spelling.
+
+    Applies at every depth — metadata dicts nested inside dicts, lists,
+    or tuples — so canonical signing (sort_keys) can never crash on key
+    types that to_json() has always exported fine (#89 review).
+    Spelling collisions (True and "true" in one mapping) raise rather
+    than emitting duplicate JSON keys.
+    """
+    if isinstance(value, dict):
+        normalized: Dict[str, Any] = {}
+        for item_key, item_value in value.items():
+            str_key = _json_key_spelling(item_key)
+            if str_key in normalized:
+                raise TypeError(
+                    f"metadata key collision after string normalization: {str_key!r}"
+                )
+            normalized[str_key] = _normalize_metadata_keys(item_value)
+        return normalized
+    if isinstance(value, tuple):
+        return tuple(_normalize_metadata_keys(item) for item in value)
+    if isinstance(value, list):
+        return [_normalize_metadata_keys(item) for item in value]
+    return value
+
+
 @dataclass
 class VerificationReceipt:
     """
@@ -84,21 +130,14 @@ class VerificationReceipt:
     def to_dict(self) -> Dict[str, Any]:
         """Convert receipt to dictionary for JSON serialization.
 
-        JSON object keys must be strings, so non-string metadata keys are
-        normalized (int 2 -> "2") exactly as json export has always
-        emitted them — signing therefore covers the exportable artifact,
-        and a never-signed receipt can never block audit export (#89
-        review). Normalizing collisions (1 and "1" both present) are
-        ambiguous and raise rather than silently dropping an entry.
+        Metadata mapping keys — at every depth — are rewritten to the
+        exact spelling json.dumps exports (int 2 -> "2", True -> "true",
+        None -> "null"), so signing covers the exportable artifact and a
+        never-signed receipt can never block audit export (#89 review).
+        Spelling collisions (True and "true" in one mapping) are
+        ambiguous and raise rather than emitting duplicate JSON keys.
         """
-        metadata: Dict[str, Any] = {}
-        for key, value in self.metadata.items():
-            str_key = key if isinstance(key, str) else str(key)
-            if str_key in metadata:
-                raise TypeError(
-                    f"metadata key collision after string normalization: {str_key!r}"
-                )
-            metadata[str_key] = value
+        metadata = _normalize_metadata_keys(self.metadata)
         return {
             "receipt_id": self.receipt_id,
             "timestamp": self.timestamp,
@@ -138,11 +177,11 @@ class VerificationReceipt:
 
         Fields that are not JSON-serializable raise TypeError, and
         metadata key collisions after string normalization raise TypeError
-        (via to_dict, so to_json/export_json reject them identically).
-        Non-finite floats raise ValueError: allow_nan=False keeps
-        NaN/Infinity tokens out of the payload — standard-JSON verifiers
-        could not reproduce a signature over them. A receipt that cannot
-        produce a canonical artifact must not sign.
+        at any depth (via to_dict, so to_json/export_json reject them
+        identically). Non-finite floats raise ValueError: allow_nan=False
+        keeps NaN/Infinity tokens out of the payload — standard-JSON
+        verifiers could not reproduce a signature over them. A receipt
+        that cannot produce a canonical artifact must not sign.
 
         Tamper evidence only: anyone without the key cannot forge or
         validate signatures, but this envelope carries no issuer
