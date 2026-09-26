@@ -194,6 +194,43 @@ def test_nested_key_collision_raises():
         receipt.get_signature(VERIFIER_KEY)
 
 
+def test_float_bool_and_special_keys_use_json_spelling():
+    receipt = make_receipt()
+    receipt.metadata = {
+        1.5: "finite",
+        False: "false-key",
+        float("nan"): "nan-key",
+        float("inf"): "pos-inf",
+        float("-inf"): "neg-inf",
+    }
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {
+        "1.5": "finite",
+        "false": "false-key",
+        "NaN": "nan-key",
+        "Infinity": "pos-inf",
+        "-Infinity": "neg-inf",
+    }
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_tuple_metadata_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"pair": ({1: "a"}, "x")}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"pair": [{"1": "a"}, "x"]}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_unsupported_metadata_key_type_raises_like_json():
+    receipt = make_receipt()
+    receipt.metadata = {(1, 2): "x"}
+    with pytest.raises(TypeError, match="keys must be str, int, float"):
+        receipt.to_json()
+    with pytest.raises(TypeError, match="keys must be str, int, float"):
+        receipt.get_signature(VERIFIER_KEY)
+
+
 def test_requires_key():
     receipt = make_receipt()
     key_param = inspect.signature(receipt.get_signature).parameters["key"]

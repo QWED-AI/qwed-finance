@@ -15,6 +15,7 @@ from enum import Enum
 import hashlib
 import hmac
 import json
+import math
 import uuid
 
 
@@ -37,7 +38,13 @@ class VerificationStatus(Enum):
 
 
 def _json_key_spelling(key: Any) -> str:
-    """Spell a mapping key exactly as json.dumps exports string keys."""
+    """Spell a mapping key exactly as json.dumps exports string keys.
+
+    json.dumps accepts only str, int, float, bool, and None keys and
+    raises for anything else, so unsupported key types raise here too:
+    str()-stringifying an arbitrary object would mint unstable keys like
+    "<object at 0x7f...>" that no other process can reproduce (#89).
+    """
     if isinstance(key, str):
         return key
     if key is True:
@@ -47,13 +54,16 @@ def _json_key_spelling(key: Any) -> str:
     if key is None:
         return "null"
     if isinstance(key, float):
-        if key != key:
+        if math.isnan(key):
             return "NaN"
-        if key == float("inf"):
-            return "Infinity"
-        if key == float("-inf"):
-            return "-Infinity"
-    return str(key)
+        if math.isinf(key):
+            return "Infinity" if key > 0 else "-Infinity"
+        return str(key)
+    if isinstance(key, int):
+        return str(key)
+    raise TypeError(
+        f"keys must be str, int, float, bool or None, not {type(key).__name__}"
+    )
 
 
 def _normalize_metadata_keys(value: Any) -> Any:
