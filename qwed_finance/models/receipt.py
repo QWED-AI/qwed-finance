@@ -82,7 +82,16 @@ class VerificationReceipt:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert receipt to dictionary for JSON serialization"""
+        """Convert receipt to dictionary for JSON serialization.
+
+        JSON object keys must be strings. Non-string metadata keys would
+        be silently coerced by to_json (int 2 -> "2") but crash canonical
+        signing under sort_keys, so both paths reject them here, at the
+        single serialization choke point (#89 review).
+        """
+        bad_keys = [k for k in self.metadata if not isinstance(k, str)]
+        if bad_keys:
+            raise TypeError(f"metadata keys must be strings, got: {bad_keys!r}")
         return {
             "receipt_id": self.receipt_id,
             "timestamp": self.timestamp,
@@ -120,15 +129,20 @@ class VerificationReceipt:
         touched a receipt alter it — or mint one wholesale — without
         detection, which is weaker than no signature at all (#44).
 
-        Fields that are not JSON-serializable (e.g. exotic metadata
-        values) raise TypeError, matching to_json(): a receipt that
-        cannot be serialized to a canonical artifact must not sign.
+        Fields that are not JSON-serializable, or metadata with non-string
+        keys, raise TypeError (via to_dict, so to_json/export_json reject
+        them identically). Non-finite floats raise ValueError:
+        allow_nan=False keeps NaN/Infinity tokens out of the payload —
+        standard-JSON verifiers could not reproduce a signature over them.
+        A receipt that cannot produce a canonical artifact must not sign.
 
         Tamper evidence only: anyone without the key cannot forge or
         validate signatures, but this envelope carries no issuer
         identity — third-party-verifiable attestation is tracked in #37.
         """
-        content = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        content = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
         return hmac.new(key, content.encode("utf-8"), hashlib.sha256).hexdigest()
 
 

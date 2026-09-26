@@ -1,7 +1,9 @@
 """Tamper-evident receipt signatures — HMAC over the full receipt (#44)."""
 
 import hashlib
+import inspect
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -61,7 +63,7 @@ def test_every_field_mutation_changes_signature():
     for field_name, forged_value in FIELD_MUTATIONS.items():
         receipt = make_receipt()
         baseline = receipt.get_signature(VERIFIER_KEY)
-        setattr(receipt, field_name, forged_value)
+        receipt = replace(receipt, **{field_name: forged_value})
         assert receipt.get_signature(VERIFIER_KEY) != baseline, field_name
 
 
@@ -84,9 +86,9 @@ def test_signature_is_keyed():
 
 
 def test_signature_deterministic_for_identical_receipts():
-    assert make_receipt().get_signature(VERIFIER_KEY) == make_receipt().get_signature(
-        VERIFIER_KEY
-    )
+    first_signature = make_receipt().get_signature(VERIFIER_KEY)
+    second_signature = make_receipt().get_signature(VERIFIER_KEY)
+    assert first_signature == second_signature
 
 
 def test_unkeyed_subset_hash_no_longer_matches():
@@ -120,7 +122,33 @@ def test_unserializable_metadata_raises_like_to_json():
         receipt.get_signature(VERIFIER_KEY)
 
 
+def test_known_answer_signature():
+    """Golden HMAC pins the exact canonical payload and algorithm."""
+    assert (
+        make_receipt().get_signature(VERIFIER_KEY)
+        == "b4d30b8e03e57010499d2d6563156b126e09e89ec6ce53d3298ef71887e526ef"
+    )
+
+
+def test_non_finite_metadata_cannot_be_signed():
+    receipt = make_receipt()
+    receipt.metadata = {"score": float("nan")}
+    with pytest.raises(ValueError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_non_string_metadata_keys_rejected_consistently():
+    receipt = make_receipt()
+    receipt.metadata = {"ok": 1, 2: "value"}
+    with pytest.raises(TypeError):
+        receipt.to_json()
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
 def test_requires_key():
     receipt = make_receipt()
+    key_param = inspect.signature(receipt.get_signature).parameters["key"]
+    assert key_param.default is inspect.Parameter.empty
     with pytest.raises(TypeError):
-        receipt.get_signature()
+        receipt.get_signature(None)
