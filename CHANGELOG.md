@@ -11,17 +11,17 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 ### Changed
 
 - **BREAKING (npm `@qwed-ai/finance`):** SDK bridge scripts now transport
-  payloads as a single JSON argv element with runtime boundary validation.
-  Hostile or malformed inputs — strings in numeric positions, quote-carrying
-  country codes, oversized payloads, mistyped token shapes — are rejected
-  instead of resolving to defaults (CVSS 9.8 / 9.0, #79).
+  JSON payloads through the child process's stdin with runtime boundary
+  validation. Hostile or malformed inputs — strings in numeric positions,
+  quote-carrying country codes, oversized payloads, mistyped token shapes —
+  are rejected instead of resolving to defaults (CVSS 9.8 / 9.0, #79).
 
 ### Added
 
 - `VerificationReceipt.get_signature(key)`: HMAC-SHA256 over the full canonical
   receipt — all 15 fields, sorted compact JSON, verifier-held key with no
   default (#44, #89).
-- ISO business-day limits wired into receipts (#65, #67).
+- ISO currency and amount business limits wired into receipts (#65, #67).
 - `RELEASE.md` release checklist covering version sync across Python, npm,
   uv.lock, README, and the GitHub Action pin.
 
