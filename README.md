@@ -599,6 +599,14 @@ Typically <5ms for simple calculations, <50ms for complex derivatives pricing. T
 - [x] Float→Decimal/mpmath migration for BondGuard, DerivativesGuard, RiskGuard
 - [x] 150 tests (including 23 float contamination + N-04 regression)
 
+### ✅ Released (v3.0.0)
+- [x] HMAC receipt signatures: all 15 fields, verifier-held key, no default
+- [x] npm SDK bridge hardened: JSON argv transport, hostile inputs fail closed (CVSS 9.8 / 9.0)
+- [x] AML: canonical country codes, declared amount constraints enforced
+- [x] Sanctions: full party-field screening, shared normalized matcher
+- [x] Fail-closed amounts: ISO ambiguity, UCP payments, Sortino edge cases
+- [x] 412 tests (including HMAC signature known-answer vectors)
+
 ### 🚧 In Progress
 - [ ] More regulatory frameworks (MiFID II, Basel III)
 - [ ] Credit risk models (PD, LGD, EAD)
@@ -641,7 +649,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: QWED-AI/qwed-finance@v2.1.0
+      - uses: QWED-AI/qwed-finance@v3.0.0
         with:
           test-script: tests/verify_agent.py
 ```
