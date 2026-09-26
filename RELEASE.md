@@ -9,6 +9,7 @@ When bumping the version (e.g., `2.1.0` → `3.0.0`), update all of the followin
 - `npm/package.json` — `version` field
 - `npm/package-lock.json` — `version` field (both root and packages entry)
 - `uv.lock` — root project `version` field
+- `CHANGELOG.md` — new dated version section and matching version-link definition (Keep a Changelog format)
 - `README.md` — GitHub Action usage example (`QWED-AI/qwed-finance@vX.Y.Z`) and a new `Released (vX.Y.Z)` roadmap section
 - `action_entrypoint.py` — imports `__version__` from `qwed_finance` (automatic; the SARIF `"version"` field is the SARIF spec version, do not touch)
 - `.github/workflows/qwed-verify.yml` — pin SHA and comment: **update this after the tag exists** (step 7 below — the SHA is unknowable before tagging)
