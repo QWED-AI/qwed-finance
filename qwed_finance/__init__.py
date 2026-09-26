@@ -1,7 +1,7 @@
 """
 QWED-Finance: Deterministic verification for banking and financial AI
 
-v2.1.0
+v3.0.0
 
 Eleven Guards + Audit Trail + Integrations:
 - ComplianceGuard: KYC/AML regulatory logic (Z3)
@@ -50,7 +50,7 @@ from .integrations import (
 )
 from .schemas import LoanSchema, InvestmentSchema, AmortizationSchema
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 __all__ = [
     # Core Verifier
     "FinanceVerifier",
