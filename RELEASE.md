@@ -22,4 +22,4 @@ When bumping the version (e.g., `2.1.0` → `3.0.0`), update all of the followin
 5. Push the tag: `git push origin vX.Y.Z`
 6. Create a GitHub Release from the tag (publishes to PyPI via trusted publishing)
 7. Open a pin-sync PR updating `.github/workflows/qwed-verify.yml` to the tagged SHA and comment `# vX.Y.Z`
-8. Publish the npm package: `cd npm && npm publish` (after `npm run build`)
+8. Publish the npm package: `cd npm && npm ci && npm run build && npm publish` (`npm ci` first — devDependencies provide `tsc` on a fresh checkout)
