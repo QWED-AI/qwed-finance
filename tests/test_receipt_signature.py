@@ -137,9 +137,17 @@ def test_non_finite_metadata_cannot_be_signed():
         receipt.get_signature(VERIFIER_KEY)
 
 
-def test_non_string_metadata_keys_rejected_consistently():
+def test_non_string_metadata_keys_normalized_for_export_and_signing():
     receipt = make_receipt()
     receipt.metadata = {"ok": 1, 2: "value"}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"ok": 1, "2": "value"}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_metadata_key_normalization_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {1: "a", "1": "b"}
     with pytest.raises(TypeError):
         receipt.to_json()
     with pytest.raises(TypeError):

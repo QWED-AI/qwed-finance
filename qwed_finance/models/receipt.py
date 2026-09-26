@@ -84,14 +84,21 @@ class VerificationReceipt:
     def to_dict(self) -> Dict[str, Any]:
         """Convert receipt to dictionary for JSON serialization.
 
-        JSON object keys must be strings. Non-string metadata keys would
-        be silently coerced by to_json (int 2 -> "2") but crash canonical
-        signing under sort_keys, so both paths reject them here, at the
-        single serialization choke point (#89 review).
+        JSON object keys must be strings, so non-string metadata keys are
+        normalized (int 2 -> "2") exactly as json export has always
+        emitted them — signing therefore covers the exportable artifact,
+        and a never-signed receipt can never block audit export (#89
+        review). Normalizing collisions (1 and "1" both present) are
+        ambiguous and raise rather than silently dropping an entry.
         """
-        bad_keys = [k for k in self.metadata if not isinstance(k, str)]
-        if bad_keys:
-            raise TypeError(f"metadata keys must be strings, got: {bad_keys!r}")
+        metadata: Dict[str, Any] = {}
+        for key, value in self.metadata.items():
+            str_key = key if isinstance(key, str) else str(key)
+            if str_key in metadata:
+                raise TypeError(
+                    f"metadata key collision after string normalization: {str_key!r}"
+                )
+            metadata[str_key] = value
         return {
             "receipt_id": self.receipt_id,
             "timestamp": self.timestamp,
@@ -107,7 +114,7 @@ class VerificationReceipt:
             "proof_steps": self.proof_steps,
             "formula_used": self.formula_used,
             "violations": self.violations,
-            "metadata": self.metadata
+            "metadata": metadata
         }
     
     def to_json(self, indent: int = 2) -> str:
@@ -129,12 +136,13 @@ class VerificationReceipt:
         touched a receipt alter it — or mint one wholesale — without
         detection, which is weaker than no signature at all (#44).
 
-        Fields that are not JSON-serializable, or metadata with non-string
-        keys, raise TypeError (via to_dict, so to_json/export_json reject
-        them identically). Non-finite floats raise ValueError:
-        allow_nan=False keeps NaN/Infinity tokens out of the payload —
-        standard-JSON verifiers could not reproduce a signature over them.
-        A receipt that cannot produce a canonical artifact must not sign.
+        Fields that are not JSON-serializable raise TypeError, and
+        metadata key collisions after string normalization raise TypeError
+        (via to_dict, so to_json/export_json reject them identically).
+        Non-finite floats raise ValueError: allow_nan=False keeps
+        NaN/Infinity tokens out of the payload — standard-JSON verifiers
+        could not reproduce a signature over them. A receipt that cannot
+        produce a canonical artifact must not sign.
 
         Tamper evidence only: anyone without the key cannot forge or
         validate signatures, but this envelope carries no issuer
