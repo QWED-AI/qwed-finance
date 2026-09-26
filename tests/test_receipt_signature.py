@@ -1,0 +1,239 @@
+"""Tamper-evident receipt signatures — HMAC over the full receipt (#44)."""
+
+import hashlib
+import inspect
+import json
+from dataclasses import replace
+
+import pytest
+
+from qwed_finance.models.receipt import (
+    VerificationEngine,
+    VerificationReceipt,
+    VerificationStatus,
+)
+
+VERIFIER_KEY = b"verifier-secret-key"
+OTHER_KEY = b"different-key"
+
+FIELD_MUTATIONS = {
+    "receipt_id": "22222222-2222-2222-2222-222222222222",
+    "timestamp": "2026-09-25T00:00:01+00:00",
+    "input_hash": "b" * 64,
+    "input_preview": "tampered preview",
+    "guard_name": "OtherGuard.method",
+    "engine_used": VerificationEngine.Z3,
+    "status": VerificationStatus.REJECTED,
+    "verified": False,
+    "computed_value": "1.00",
+    "llm_value": "1.00",
+    "difference": "99.00",
+    "proof_steps": ["forged-step"],
+    "formula_used": "b=c",
+    "violations": ["forged-violation"],
+    "metadata": {"rule": "forged"},
+}
+
+
+def make_receipt() -> VerificationReceipt:
+    return VerificationReceipt(
+        receipt_id="11111111-1111-1111-1111-111111111111",
+        timestamp="2026-09-25T00:00:00+00:00",
+        input_hash="a" * 64,
+        input_preview="legit preview",
+        guard_name="ComplianceGuard.verify_aml_flag",
+        engine_used=VerificationEngine.DECIMAL,
+        status=VerificationStatus.VERIFIED,
+        verified=True,
+        computed_value="100.00",
+        llm_value="100.00",
+        difference="0.00",
+        proof_steps=["step-1"],
+        formula_used="a=b",
+        violations=["none"],
+        metadata={"rule": "r-1"},
+    )
+
+
+def test_mutations_cover_every_receipt_field():
+    assert set(FIELD_MUTATIONS) == set(make_receipt().to_dict())
+
+
+def test_every_field_mutation_changes_signature():
+    for field_name, forged_value in FIELD_MUTATIONS.items():
+        receipt = make_receipt()
+        baseline = receipt.get_signature(VERIFIER_KEY)
+        receipt = replace(receipt, **{field_name: forged_value})
+        assert receipt.get_signature(VERIFIER_KEY) != baseline, field_name
+
+
+def test_issue_44_repro_in_place_tampering_undetected_before():
+    """The exact #44 sequence: mutations used to leave the hash identical."""
+    receipt = make_receipt()
+    before = receipt.get_signature(VERIFIER_KEY)
+
+    receipt.computed_value = "1.00"
+    receipt.violations.append("fake")
+    receipt.proof_steps.append("fake")
+    receipt.status = VerificationStatus.REJECTED
+
+    assert receipt.get_signature(VERIFIER_KEY) != before
+
+
+def test_signature_is_keyed():
+    receipt = make_receipt()
+    assert receipt.get_signature(VERIFIER_KEY) != receipt.get_signature(OTHER_KEY)
+
+
+def test_signature_deterministic_for_identical_receipts():
+    first_signature = make_receipt().get_signature(VERIFIER_KEY)
+    second_signature = make_receipt().get_signature(VERIFIER_KEY)
+    assert first_signature == second_signature
+
+
+def test_unkeyed_subset_hash_no_longer_matches():
+    receipt = make_receipt()
+    legacy_content = json.dumps(
+        {
+            "receipt_id": receipt.receipt_id,
+            "timestamp": receipt.timestamp,
+            "input_hash": receipt.input_hash,
+            "verified": receipt.verified,
+            "engine_used": receipt.engine_used.value,
+        },
+        sort_keys=True,
+    )
+    legacy = hashlib.sha256(legacy_content.encode()).hexdigest()
+    assert receipt.get_signature(VERIFIER_KEY) != legacy
+
+
+def test_surrogate_bearing_metadata_signs_without_raising():
+    receipt = make_receipt()
+    receipt.metadata = {"preview": "bad\ud800byte"}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_unserializable_metadata_raises_like_to_json():
+    receipt = make_receipt()
+    receipt.metadata = {"obj": object()}
+    with pytest.raises(TypeError):
+        receipt.to_json()
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_known_answer_signature():
+    """Golden HMAC pins the exact canonical payload and algorithm."""
+    assert (
+        make_receipt().get_signature(VERIFIER_KEY)
+        == "b4d30b8e03e57010499d2d6563156b126e09e89ec6ce53d3298ef71887e526ef"
+    )
+
+
+def test_non_finite_metadata_cannot_be_signed():
+    receipt = make_receipt()
+    receipt.metadata = {"score": float("nan")}
+    with pytest.raises(ValueError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_non_string_metadata_keys_normalized_for_export_and_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"ok": 1, 2: "value"}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"ok": 1, "2": "value"}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_metadata_key_normalization_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {1: "a", "1": "b"}
+    with pytest.raises(TypeError):
+        receipt.to_json()
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_nested_metadata_keys_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"nested": {"flag": True, 1: "value"}}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"nested": {"flag": True, "1": "value"}}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_metadata_keys_inside_list_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"items": [{"a": 1, 2: "b"}]}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"items": [{"a": 1, "2": "b"}]}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_bool_and_none_metadata_keys_use_json_spelling():
+    receipt = make_receipt()
+    receipt.metadata = {True: "a", None: "b", "True": "c"}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"true": "a", "null": "b", "True": "c"}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_json_spelling_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {True: "a", "true": "b"}
+    with pytest.raises(TypeError):
+        receipt.to_json()
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_nested_key_collision_raises():
+    receipt = make_receipt()
+    receipt.metadata = {"nested": {1: "a", "1": "b"}}
+    with pytest.raises(TypeError):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_float_bool_and_special_keys_use_json_spelling():
+    receipt = make_receipt()
+    receipt.metadata = {
+        1.5: "finite",
+        False: "false-key",
+        float("nan"): "nan-key",
+        float("inf"): "pos-inf",
+        float("-inf"): "neg-inf",
+    }
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {
+        "1.5": "finite",
+        "false": "false-key",
+        "NaN": "nan-key",
+        "Infinity": "pos-inf",
+        "-Infinity": "neg-inf",
+    }
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_tuple_metadata_normalized_before_signing():
+    receipt = make_receipt()
+    receipt.metadata = {"pair": ({1: "a"}, "x")}
+    exported = json.loads(receipt.to_json())
+    assert exported["metadata"] == {"pair": [{"1": "a"}, "x"]}
+    receipt.get_signature(VERIFIER_KEY)
+
+
+def test_unsupported_metadata_key_type_raises_like_json():
+    receipt = make_receipt()
+    receipt.metadata = {(1, 2): "x"}
+    with pytest.raises(TypeError, match="keys must be str, int, float"):
+        receipt.to_json()
+    with pytest.raises(TypeError, match="keys must be str, int, float"):
+        receipt.get_signature(VERIFIER_KEY)
+
+
+def test_requires_key():
+    receipt = make_receipt()
+    key_param = inspect.signature(receipt.get_signature).parameters["key"]
+    assert key_param.default is inspect.Parameter.empty
+    with pytest.raises(TypeError):
+        receipt.get_signature(None)

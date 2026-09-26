@@ -1,6 +1,11 @@
 """
-Verification Receipt - Cryptographic proof of verification for audit trails
-Required for regulatory compliance (SEC, OCC, FinCEN)
+Verification Receipt - tamper-evident evidence records for audit trails.
+
+Integrity is checked with VerificationReceipt.get_signature: HMAC-SHA256
+over the full canonical receipt, keyed by the verifier instance. This is
+tamper evidence for holders of the signing key only — it carries no issuer
+identity and is not third-party-verifiable attestation; the regulator-facing
+attestation format is tracked in #37.
 """
 
 from dataclasses import dataclass, field
@@ -8,7 +13,9 @@ from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from enum import Enum
 import hashlib
+import hmac
 import json
+import math
 import uuid
 
 
@@ -30,15 +37,73 @@ class VerificationStatus(Enum):
     ERROR = "error"
 
 
+def _json_key_spelling(key: Any) -> str:
+    """Spell a mapping key exactly as json.dumps exports string keys.
+
+    json.dumps accepts only str, int, float, bool, and None keys and
+    raises for anything else, so unsupported key types raise here too:
+    str()-stringifying an arbitrary object would mint unstable keys like
+    "<object at 0x7f...>" that no other process can reproduce (#89).
+    """
+    if isinstance(key, str):
+        return key
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if key is None:
+        return "null"
+    if isinstance(key, float):
+        if math.isnan(key):
+            return "NaN"
+        if math.isinf(key):
+            return "Infinity" if key > 0 else "-Infinity"
+        return str(key)
+    if isinstance(key, int):
+        return str(key)
+    raise TypeError(
+        f"keys must be str, int, float, bool or None, not {type(key).__name__}"
+    )
+
+
+def _normalize_metadata_keys(value: Any) -> Any:
+    """Recursively rewrite mapping keys to their JSON spelling.
+
+    Applies at every depth — metadata dicts nested inside dicts, lists,
+    or tuples — so canonical signing (sort_keys) can never crash on key
+    types that to_json() has always exported fine (#89 review).
+    Spelling collisions (True and "true" in one mapping) raise rather
+    than emitting duplicate JSON keys.
+    """
+    if isinstance(value, dict):
+        normalized: Dict[str, Any] = {}
+        for item_key, item_value in value.items():
+            str_key = _json_key_spelling(item_key)
+            if str_key in normalized:
+                raise TypeError(
+                    f"metadata key collision after string normalization: {str_key!r}"
+                )
+            normalized[str_key] = _normalize_metadata_keys(item_value)
+        return normalized
+    if isinstance(value, tuple):
+        return tuple(_normalize_metadata_keys(item) for item in value)
+    if isinstance(value, list):
+        return [_normalize_metadata_keys(item) for item in value]
+    return value
+
+
 @dataclass
 class VerificationReceipt:
     """
-    Cryptographic proof of verification for audit trails.
-    
+    Evidence record of a verification run for audit trails.
+
     Every verification generates a receipt that can be:
     - Stored in audit logs
-    - Submitted to regulators
     - Used for dispute resolution
+    - Checked for in-place tampering via get_signature (key holders)
+
+    get_signature proves integrity to holders of the signing key; it does
+    not establish issuer identity or third-party verifiability (see #37).
     """
     
     # Unique identifiers
@@ -73,7 +138,16 @@ class VerificationReceipt:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert receipt to dictionary for JSON serialization"""
+        """Convert receipt to dictionary for JSON serialization.
+
+        Metadata mapping keys — at every depth — are rewritten to the
+        exact spelling json.dumps exports (int 2 -> "2", True -> "true",
+        None -> "null"), so signing covers the exportable artifact and a
+        never-signed receipt can never block audit export (#89 review).
+        Spelling collisions (True and "true" in one mapping) are
+        ambiguous and raise rather than emitting duplicate JSON keys.
+        """
+        metadata = _normalize_metadata_keys(self.metadata)
         return {
             "receipt_id": self.receipt_id,
             "timestamp": self.timestamp,
@@ -89,26 +163,44 @@ class VerificationReceipt:
             "proof_steps": self.proof_steps,
             "formula_used": self.formula_used,
             "violations": self.violations,
-            "metadata": self.metadata
+            "metadata": metadata
         }
     
     def to_json(self, indent: int = 2) -> str:
         """Serialize receipt to JSON"""
         return json.dumps(self.to_dict(), indent=indent)
     
-    def get_signature(self) -> str:
+    def get_signature(self, key: bytes) -> str:
         """
-        Generate cryptographic signature of the receipt.
-        Can be used to verify receipt hasn't been tampered with.
+        HMAC-SHA256 signature over the full canonical receipt.
+
+        Signs every field returned by to_dict() (canonical JSON, sorted
+        keys), so mutating any of them — computed_value, llm_value,
+        difference, status, violations, proof_steps, formula_used,
+        metadata — changes the signature (#44).
+
+        The key must be held by the verifier instance that issues or
+        checks receipts; there is intentionally no default key. The
+        previous unkeyed SHA-256 over a 5-field subset let anyone who
+        touched a receipt alter it — or mint one wholesale — without
+        detection, which is weaker than no signature at all (#44).
+
+        Fields that are not JSON-serializable raise TypeError, and
+        metadata key collisions after string normalization raise TypeError
+        at any depth (via to_dict, so to_json/export_json reject them
+        identically). Non-finite floats raise ValueError: allow_nan=False
+        keeps NaN/Infinity tokens out of the payload — standard-JSON
+        verifiers could not reproduce a signature over them. A receipt
+        that cannot produce a canonical artifact must not sign.
+
+        Tamper evidence only: anyone without the key cannot forge or
+        validate signatures, but this envelope carries no issuer
+        identity — third-party-verifiable attestation is tracked in #37.
         """
-        content = json.dumps({
-            "receipt_id": self.receipt_id,
-            "timestamp": self.timestamp,
-            "input_hash": self.input_hash,
-            "verified": self.verified,
-            "engine_used": self.engine_used.value
-        }, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()
+        content = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        return hmac.new(key, content.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class ReceiptGenerator:
