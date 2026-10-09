@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       
-      - uses: QWED-AI/qwed-finance@e93071b0298e82430f82e265a52905f8761183f3 # v3.0.0
+      - uses: QWED-AI/qwed-finance@6c358f7f666f00afefbaf97179e3e51f0445d3c6 # v3.0.1
         with:
           action: verify
           verification_type: npv
