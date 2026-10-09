@@ -93,22 +93,63 @@ def _is_ignorable(char: str) -> bool:
     )
 
 
+#: Latin letter variants NFKC leaves alone: small capitals (ᴇ, ʟ, ʀ),
+#: dotless i/j, and similar single-letter forms, keyed by Unicode name.
+_LATIN_VARIANT_NAME_RE = re.compile(
+    r"LATIN (?:SMALL |CAPITAL )?LETTER (?:SMALL CAPITAL |DOTLESS )?([A-Z])"
+)
+
+#: Cyrillic and Greek letters (casefolded) that render like a Latin
+#: letter in common fonts — upper-case look-alikes are listed by their
+#: casefolded form, since screening casefolds first. A name spelled
+#: entirely in these letters reads as Latin to an operator but would
+#: otherwise compare as a different script (GHSA-mv2c-jwm9-pfrq).
+_LATIN_CONFUSABLES = {
+    # Cyrillic
+    "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h",
+    "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i",
+    "ї": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "һ": "h", "ԛ": "q", "ԝ": "w",
+    # Greek
+    "α": "a", "β": "b", "ε": "e", "ζ": "z", "η": "h", "ι": "i", "κ": "k",
+    "μ": "m", "ν": "n", "ο": "o", "ρ": "p", "τ": "t", "υ": "y", "χ": "x",
+}
+
+
+def _latin_skeleton(char: str) -> str:
+    """Map a casefolded letter to the Latin letter it renders as."""
+    if char.isascii():
+        return char
+    mapped = _LATIN_CONFUSABLES.get(char)
+    if mapped is not None:
+        return mapped
+    match = _LATIN_VARIANT_NAME_RE.fullmatch(unicodedata.name(char, ""))
+    return match.group(1).lower() if match else char
+
+
 def normalize_for_screening(value: Any) -> str:
     """Canonicalize a party string for sanctions containment checks.
 
-    NFKC fold (fullwidth/homoglyph forms), ignorable strip (zero-width,
-    bidi controls/isolates, BOM, Arabic letter mark), punctuation →
-    space, casefold, whitespace collapse. Unicode letters are preserved
-    (``str.isalnum`` is script-aware): identical non-Latin names match
-    instead of both collapsing to empty. Applied to BOTH sides of every
-    containment check, so one-char perturbations (extra spaces, hyphens,
-    dots, full-width, bidi isolates) cannot break the match (#76).
+    Compatibility decomposition (NFKD: fullwidth forms, ligatures,
+    precomposed diacritics), ignorable strip (zero-width, bidi
+    controls/isolates, BOM, Arabic letter mark), combining-mark removal
+    (``É`` → ``E``, stray marks inside a word), casefold, Latin skeleton
+    for look-alike letters (small capitals, dotless i, Cyrillic/Greek
+    homoglyphs), punctuation → space, whitespace collapse. Unicode
+    letters are otherwise preserved (``str.isalnum`` is script-aware):
+    identical non-Latin names match instead of both collapsing to empty.
+    Applied to BOTH sides of every containment check, so one-char
+    perturbations cannot break the match (#76, GHSA-mv2c-jwm9-pfrq).
     """
     if not isinstance(value, str):
         return ""
-    text = unicodedata.normalize("NFKC", value)
-    text = "".join(char for char in text if not _is_ignorable(char))
-    text = "".join(char if char.isalnum() else " " for char in text.casefold())
+    text = unicodedata.normalize("NFKD", value)
+    text = "".join(
+        char
+        for char in text
+        if not _is_ignorable(char) and unicodedata.category(char) not in ("Mn", "Me")
+    )
+    text = "".join(_latin_skeleton(char) for char in text.casefold())
+    text = "".join(char if char.isalnum() else " " for char in text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -147,12 +188,19 @@ def sanctions_match(entity: str, sanctioned: str, allow_reverse: bool = True) ->
     names cannot condemn via substring coincidence. Transliterations,
     abbreviations, and true aliases remain a documented residual
     requiring alias-structured data (#78).
+
+    The forward check also compares separator-free forms, so punctuation
+    or spacing inserted inside a word ("EV-IL", "E.V.I.L.", "EV IL")
+    cannot split a sanctioned name into tokens that no longer contain it
+    (GHSA-mv2c-jwm9-pfrq).
     """
     left = normalize_for_screening(entity)
     right = normalize_for_screening(sanctioned)
     if not left or not right:
         return False
     if right in left:
+        return True
+    if right.replace(" ", "") in left.replace(" ", ""):
         return True
     if allow_reverse and left in right:
         return True
