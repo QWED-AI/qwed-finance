@@ -87,13 +87,17 @@ def test_cdata_wrapped_tag_decoy_is_not_an_occurrence():
     assert result.passed is False
 
 
-def test_split_cdata_preserves_legitimate_value():
+def test_split_cdata_with_markup_text_fails_closed():
+    # An XML parser reads this element's text as "100<X>", which is not
+    # an amount. The rules must judge what parsers read, never a
+    # filtered view of the raw text (GHSA-mrrj-6m2q-jch9).
     xml = (
         "<Document><IntrBkSttlmAmt><![CDATA[100]]><![CDATA[<X>]]></IntrBkSttlmAmt>"
         "</Document>"
     )
     result = _check(xml)
-    assert _amount_guards(result) == (True, True, True)
+    assert result.guard_results.get("BusinessRule.amount") is False
+    assert result.passed is False
 
 
 def test_single_quoted_ccy_accepted():

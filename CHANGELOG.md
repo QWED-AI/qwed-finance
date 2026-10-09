@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/). Releases before
 v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finance/releases).
 
+## [Unreleased]
+
+### Security
+
+- **ISO 20022 business rules read the parsed document**
+  (GHSA-mrrj-6m2q-jch9): `CrossGuard.check_business_rules` /
+  `verify_iso20022_with_rules` and `UCPIntegration.verify_iso20022_payment`
+  now take `IntrBkSttlmAmt` values and `Ccy` attributes from the
+  defusedxml-parsed tree (local names, any namespace) instead of regex
+  extraction over raw text. Previously a namespace prefix outside the
+  regex character class, combined with a decoy inside a processing
+  instruction, let an over-limit, disallowed-currency pacs.008 pass the
+  rules and approve.
+- Amount elements containing child nodes (elements, comments, processing
+  instructions) and amounts that are not plain `xs:decimal` (exponents,
+  grouping separators) now fail closed as unparseable. Character
+  references are decoded once, by the parser.
+
 ## [3.0.0] - 2026-09-27
 
 ### Changed
