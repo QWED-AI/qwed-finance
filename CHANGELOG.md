@@ -8,6 +8,8 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-09
+
 ### Security
 
 - **ISO 20022 business rules read the parsed document**
@@ -87,5 +89,7 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 - 150 tests at release, including float-contamination and N-04 regression
   coverage.
 
+[Unreleased]: https://github.com/QWED-AI/qwed-finance/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/QWED-AI/qwed-finance/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/QWED-AI/qwed-finance/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/QWED-AI/qwed-finance/releases/tag/v2.1.0
