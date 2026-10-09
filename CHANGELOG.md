@@ -23,6 +23,14 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   instructions) and amounts that are not plain `xs:decimal` (exponents,
   grouping separators) now fail closed as unparseable. Character
   references are decoded once, by the parser.
+- **Sanctions screening resists in-word perturbations**
+  (GHSA-mv2c-jwm9-pfrq): `normalize_for_screening` now folds diacritics
+  and stray combining marks (NFKD + mark removal) and maps Latin
+  look-alike letters (small capitals, dotless i, Cyrillic/Greek
+  homoglyphs) to a Latin skeleton. `sanctions_match` additionally
+  compares separator-free forms in the forward direction, so names such
+  as `EV-IL CORP`, `E.V.I.L. CORP`, `ÉVIL CORP` or `ᴇᴠɪʟ ᴄᴏʀᴘ` no longer
+  clear a `EVIL CORP` entry. Address fragments remain forward-only.
 
 ## [3.0.0] - 2026-09-27
 
