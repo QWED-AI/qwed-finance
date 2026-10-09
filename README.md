@@ -607,6 +607,12 @@ Typically <5ms for simple calculations, <50ms for complex derivatives pricing. T
 - [x] Fail-closed amounts: ISO ambiguity, UCP payments, Sortino edge cases
 - [x] 412 tests (including HMAC signature known-answer vectors)
 
+### ✅ Released (v3.0.1)
+- [x] Security: ISO 20022 business rules judge the parsed XML tree, not a regex view (GHSA-mrrj-6m2q-jch9)
+- [x] Security: sanctions screening folds in-word punctuation, diacritics and look-alike letters (GHSA-mv2c-jwm9-pfrq)
+- [x] Security: QueryGuard rejects MySQL/MariaDB executable comments (GHSA-q8r4-6gpp-5fx2)
+- [x] 497 tests
+
 ### 🚧 In Progress
 - [ ] More regulatory frameworks (MiFID II, Basel III)
 - [ ] Credit risk models (PD, LGD, EAD)
@@ -649,7 +655,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: QWED-AI/qwed-finance@v3.0.0
+      - uses: QWED-AI/qwed-finance@v3.0.1
         with:
           test-script: tests/verify_agent.py
 ```
