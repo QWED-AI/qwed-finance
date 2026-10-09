@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 versions follow [Semantic Versioning](https://semver.org/). Releases before
 v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finance/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- `price_option` rejects anything other than exactly `call` or `put`,
+  rejects missing numeric inputs instead of filling defaults, and records
+  the put formula on put receipts (#73).
+
 ## [3.0.0] - 2026-09-27
 
 ### Changed

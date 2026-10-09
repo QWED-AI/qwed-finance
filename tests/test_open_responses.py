@@ -357,3 +357,53 @@ class TestBlackScholesInputGuard:
             },
         )
         assert result.status == ToolCallStatus.REJECTED
+
+class TestOptionTypeSchema:
+    """#73: declared option_type enum must be enforced, not silently priced as put."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def _args(self, **overrides):
+        args = {
+            "spot_price": 100,
+            "strike_price": 100,
+            "time_to_expiry": 1,
+            "risk_free_rate": 0.05,
+            "volatility": 0.2,
+            "option_type": "call",
+        }
+        args.update(overrides)
+        return args
+
+    def test_call_and_put_are_accepted(self):
+        call = self.integration.handle_tool_call("price_option", self._args())
+        put = self.integration.handle_tool_call(
+            "price_option", self._args(option_type="put")
+        )
+        assert call.status == ToolCallStatus.COMPUTED
+        assert put.status == ToolCallStatus.COMPUTED
+        assert call.receipt.formula_used.startswith("Black-Scholes: C =")
+        assert put.receipt.formula_used.startswith("Black-Scholes: P =")
+        assert call.result["price"] != put.result["price"]
+
+    def test_non_enum_option_type_rejected(self):
+        for bad in ("CALL", "Call", "calls", 1, None, True):
+            result = self.integration.handle_tool_call(
+                "price_option", self._args(option_type=bad)
+            )
+            assert result.status == ToolCallStatus.REJECTED, bad
+            assert "option_type" in result.error
+            assert result.retry_message
+            assert result.receipt is not None
+            assert not (result.receipt.formula_used or "").startswith("Black-Scholes: C =")
+
+    def test_missing_option_type_and_empty_payload_rejected(self):
+        args = self._args()
+        del args["option_type"]
+        missing = self.integration.handle_tool_call("price_option", args)
+        empty = self.integration.handle_tool_call("price_option", {})
+        assert missing.status == ToolCallStatus.REJECTED
+        assert empty.status == ToolCallStatus.REJECTED
+        assert empty.status != ToolCallStatus.COMPUTED
+

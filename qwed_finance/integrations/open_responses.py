@@ -423,50 +423,119 @@ class OpenResponsesIntegration:
             receipt=receipt
         )
     
-    def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute Black-Scholes option price — delegates to DerivativesGuard.
-        
-        Single source of truth: uses the same mpmath-based implementation
-        as self.derivatives to ensure deterministic consistency across paths.
-        """
-        S = args.get("spot_price", 100)
-        K = args.get("strike_price", 100)
-        T = args.get("time_to_expiry", 1)
-        r = args.get("risk_free_rate", 0.05)
-        sigma = args.get("volatility", 0.2)
-        opt_type = OptionType.CALL if args.get("option_type") == "call" else OptionType.PUT
-        
-        # Fail-closed: reject non-positive inputs that would cause math errors
-        if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
-            return VerifiedToolCall(
-                status=ToolCallStatus.REJECTED,
-                tool_name="price_option",
-                original_args=args,
-                error="spot_price, strike_price, time_to_expiry, and volatility must be > 0",
-                retry_message="Provide strictly positive inputs for Black-Scholes pricing.",
-            )
-        
-        # Delegate to self.derivatives — single source of truth (mpmath)
-        bs_result = self.derivatives.verify_black_scholes(
-            spot_price=S,
-            strike_price=K,
-            time_to_expiry=T,
-            risk_free_rate=r,
-            volatility=sigma,
-            option_type=opt_type,
-            llm_price="$0.00"  # Placeholder — we only need computed_price
+    def _reject_option_price(
+        self,
+        args: Dict[str, Any],
+        error: str,
+        retry_message: str,
+        violation: str,
+    ) -> VerifiedToolCall:
+        """Fail closed without pricing. Receipt is logged; exception text is not."""
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name="OpenResponses.price_option",
+            engine=VerificationEngine.SYMPY,
+            llm_output=str(args),
+            verified=False,
+            computed_value="rejected_invalid_arguments",
+            violations=[violation],
         )
-        
+        self.audit_log.log(receipt)
+        return VerifiedToolCall(
+            status=ToolCallStatus.REJECTED,
+            tool_name="price_option",
+            original_args=args,
+            error=error,
+            retry_message=retry_message,
+            receipt=receipt,
+        )
+
+    def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
+        """Compute Black-Scholes option price, delegating to DerivativesGuard.
+
+        Declared schema is enforced: option_type is exactly call or put.
+        Anything else used to price as a put while the receipt still
+        described a call (#73). Missing fields are rejected rather than
+        filled from defaults.
+        """
+        option_type = args.get("option_type")
+        if option_type not in ("call", "put"):
+            return self._reject_option_price(
+                args,
+                "option_type must be exactly 'call' or 'put'.",
+                "Provide option_type as the string 'call' or 'put'.",
+                "option_type must be exactly call or put",
+            )
+
+        required_positive = (
+            "spot_price",
+            "strike_price",
+            "time_to_expiry",
+            "volatility",
+        )
+        numbers: Dict[str, float] = {}
+        for name in (*required_positive, "risk_free_rate"):
+            if name not in args:
+                return self._reject_option_price(
+                    args,
+                    f"Missing required field: {name}.",
+                    "Provide spot_price, strike_price, time_to_expiry, "
+                    "risk_free_rate, volatility, and option_type.",
+                    f"{name} is required",
+                )
+            value = args[name]
+            # bool is an int subclass and must not be treated as a price.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return self._reject_option_price(
+                    args,
+                    f"{name} must be a finite number.",
+                    "Provide numeric Black-Scholes inputs; booleans and "
+                    "strings are not accepted.",
+                    f"{name} must be a finite number",
+                )
+            if value != value or value in (float("inf"), float("-inf")):
+                return self._reject_option_price(
+                    args,
+                    f"{name} must be a finite number.",
+                    "Provide finite Black-Scholes inputs.",
+                    f"{name} must be a finite number",
+                )
+            numbers[name] = value
+
+        if any(numbers[name] <= 0 for name in required_positive):
+            return self._reject_option_price(
+                args,
+                "spot_price, strike_price, time_to_expiry, and volatility must be > 0",
+                "Provide strictly positive inputs for Black-Scholes pricing.",
+                "spot_price, strike_price, time_to_expiry, and volatility must be > 0",
+            )
+
+        opt_type = OptionType.CALL if option_type == "call" else OptionType.PUT
+        formula = (
+            "Black-Scholes: C = S*N(d1) - K*e^(-rT)*N(d2)"
+            if option_type == "call"
+            else "Black-Scholes: P = K*e^(-rT)*N(-d2) - S*N(-d1)"
+        )
+
+        bs_result = self.derivatives.verify_black_scholes(
+            spot_price=numbers["spot_price"],
+            strike_price=numbers["strike_price"],
+            time_to_expiry=numbers["time_to_expiry"],
+            risk_free_rate=numbers["risk_free_rate"],
+            volatility=numbers["volatility"],
+            option_type=opt_type,
+            llm_price="$0.00"  # Placeholder; only computed_price is used
+        )
+
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.price_option",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim
             computed_value=bs_result.computed_price,
-            formula="Black-Scholes: C = S·N(d₁) - K·e^(-rT)·N(d₂)"
+            formula=formula,
         )
         self.audit_log.log(receipt)
-        
+
         return VerifiedToolCall(
             status=ToolCallStatus.COMPUTED,
             tool_name="price_option",
@@ -477,11 +546,11 @@ class OpenResponsesIntegration:
                 "delta": bs_result.greeks.get("delta") if bs_result.greeks else None,
                 "verified": False,
                 "computed": True,
-                "verified_against_llm": False
+                "verified_against_llm": False,
             },
-            receipt=receipt
+            receipt=receipt,
         )
-    
+
     @staticmethod
     def _extract_receipt_meta(
         receipt: Optional[VerificationReceipt],
