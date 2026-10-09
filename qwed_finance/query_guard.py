@@ -6,6 +6,7 @@ Ensures LLM-generated SQL queries are read-only and access only allowed tables
 from dataclasses import dataclass
 from typing import List, Optional, Set
 from enum import Enum
+import re
 
 
 class QueryRisk(Enum):
@@ -32,7 +33,19 @@ class QueryGuard:
     Deterministic SQL safety verification using AST analysis.
     Prevents LLM-generated queries from mutating data or accessing restricted tables.
     """
-    
+
+    #: MySQL executes the body of /*! ... */ (and /*!NNNNN ... */)
+    #: comments, MariaDB also /*M! ... */, while the parser drops them as
+    #: ordinary comments. Any such comment makes the analysed AST differ
+    #: from the executed statement (GHSA-q8r4-6gpp-5fx2). Matched anywhere
+    #: in the text, including inside string literals: a false rejection is
+    #: preferred over an unanalysable query.
+    _EXECUTABLE_COMMENT_RE = re.compile(r"/\*[mM]?!")
+    _EXECUTABLE_COMMENT_VIOLATION = (
+        "Executable comment (/*! ... */) detected: its content is executed "
+        "by MySQL/MariaDB but invisible to analysis"
+    )
+
     def __init__(self, allowed_tables: Optional[Set[str]] = None):
         """
         Initialize the Query Guard.
@@ -81,7 +94,12 @@ class QueryGuard:
         
         # Normalize query
         sql_upper = sql_query.upper().strip()
-        
+
+        # Executable comments are run by MySQL/MariaDB but dropped by the
+        # parser: table, column and mutation checks below cannot see them.
+        if self._EXECUTABLE_COMMENT_RE.search(sql_query):
+            violations.append(self._EXECUTABLE_COMMENT_VIOLATION)
+
         # Quick check for mutation keywords
         for keyword in self.mutation_keywords:
             if keyword in sql_upper.split():
@@ -380,8 +398,14 @@ class QueryGuard:
                 sanitized_query=sql_query  # No changes needed
             )
         
-        # If unsafe, try to extract just the SELECT part
-        if self._sqlglot_available and result.query_type == "SELECT":
+        # If unsafe, try to extract just the SELECT part. Never "sanitize"
+        # an executable comment: whether the rewrite neutralizes it depends
+        # on the parser's comment formatting, not on any analysis.
+        if (
+            self._sqlglot_available
+            and result.query_type == "SELECT"
+            and self._EXECUTABLE_COMMENT_VIOLATION not in result.violations
+        ):
             import sqlglot
             try:
                 # Re-transpile to normalized form
