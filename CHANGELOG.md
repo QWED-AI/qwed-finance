@@ -31,6 +31,15 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   compares separator-free forms in the forward direction, so names such
   as `EV-IL CORP`, `E.V.I.L. CORP`, `ÉVIL CORP` or `ᴇᴠɪʟ ᴄᴏʀᴘ` no longer
   clear a `EVIL CORP` entry. Address fragments remain forward-only.
+- **QueryGuard rejects MySQL executable comments** (GHSA-q8r4-6gpp-5fx2):
+  queries containing `/*! ... */` or MariaDB `/*M! ... */` comments are
+  now unsafe in `verify_readonly_safety`, and therefore in
+  `verify_table_access`, `verify_column_access`, `sanitize_query` and
+  `CrossGuard.verify_query_with_pii_protection`. MySQL executes these
+  comments while the parser drops them, so tables and columns inside them
+  previously bypassed the allow-list and PII checks. `sanitize_query` no
+  longer rewrites such queries. Ordinary comments and optimizer hints
+  (`/*+ ... */`) are unaffected.
 
 ## [3.0.0] - 2026-09-27
 
