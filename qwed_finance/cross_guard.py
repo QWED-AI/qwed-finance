@@ -14,7 +14,6 @@ from .compliance_guard import (
 from .message_guard import MessageGuard, MessageType
 from .query_guard import QueryGuard
 from .models.receipt import VerificationReceipt, ReceiptGenerator, VerificationEngine, AuditLog
-import html
 import re
 
 @dataclass
@@ -510,75 +509,105 @@ class CrossGuard:
     _CHECK_POSITIVE = "BusinessRule.positive_amount"
     _CHECK_CCY = "BusinessRule.currency"
 
-    #: Matches one IntrBkSttlmAmt element: attribute string plus inner
-    #: content, or a self-closing element (content None). Optional
-    #: namespace prefix — ISO messages may bind a default/prefixed
-    #: namespace, and the parsed-tree structure check accepts them, so
-    #: the rules engine must too (#88).
-    _AMOUNT_ELEMENT_RE = re.compile(
-        r"<(?:[\w.-]+:)?IntrBkSttlmAmt\b([^>]*?)"
-        r"(?:/\s*>|>(.*?)</(?:[\w.-]+:)?IntrBkSttlmAmt\s*>)",
-        re.DOTALL,
-    )
-    #: Consumes one complete name="value" pair (quote-aware) so a
-    #: decoy Ccy inside another attribute's value is never tokenized
-    #: as an attribute name (#88).
-    _ATTR_PAIR_RE = re.compile(
-        r"""(?:\s|^)([\w.:-]+)\s*=\s*(["'])(.*?)\2""", re.DOTALL
-    )
-    _CDATA_RE = re.compile(r"^\s*<!\[CDATA\[(.*)\]\]>\s*$", re.DOTALL)
-    _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-    #: One CDATA section at a time: judging sections individually keeps a
-    #: tag-shaped decoy from swallowing a neighboring legitimate value.
-    _CDATA_SECTION_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
-    _TAG_LIKE_RE = re.compile(r"<[A-Za-z/!?]")
+    #: Local name of the settlement-amount element and its currency
+    #: attribute, matched in any namespace.
+    _AMOUNT_LOCAL_NAME = "IntrBkSttlmAmt"
+    _CCY_LOCAL_NAME = "Ccy"
+    #: xs:decimal lexical form (ActiveCurrencyAndAmount): optional sign,
+    #: digits, optional fraction. No exponent, grouping separators, or
+    #: other Decimal-constructor extensions — any spelling a schema-valid
+    #: parser would not read as the same number is unparseable here.
+    _DECIMAL_LEXICAL_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
 
     @staticmethod
-    def _strip_tagged_cdata(match: "re.Match") -> str:
-        """Drop tag-shaped CDATA decoys, unwrap pure-text CDATA."""
-        return "" if CrossGuard._TAG_LIKE_RE.search(match.group(1)) else match.group(0)
+    def _local_name(name: str) -> str:
+        """Strip an ElementTree '{namespace}' qualifier."""
+        return name.rsplit("}", 1)[-1]
+
+    @classmethod
+    def _parse_xml_tree(cls, xml: str):
+        """Parse with defusedxml, keeping comments and PIs as nodes.
+
+        Returns the root element, or None when the document cannot be
+        parsed safely (malformed, DTD entities, unpaired surrogates).
+        Comments and processing instructions are kept so that markup
+        inside an amount element is visible and rejected, instead of
+        being silently dropped by one parser and kept by another.
+        """
+        from xml.etree.ElementTree import TreeBuilder
+        from defusedxml.ElementTree import DefusedXMLParser
+
+        try:
+            parser = DefusedXMLParser(
+                target=TreeBuilder(insert_comments=True, insert_pis=True)
+            )
+            parser.feed(xml)
+            return parser.close()
+        except Exception:
+            return None
 
     def _extract_xml_occurrences(self, xml: str):
-        """Every IntrBkSttlmAmt occurrence as (attrs, text-or-None).
+        """Every IntrBkSttlmAmt element as (currencies, text-or-None).
 
-        Comments are stripped first so comment-only decoys neither
-        satisfy nor poison the agreement check. CDATA sections holding
-        tag-shaped content are decoys, not elements: they are removed
-        before matching, while pure-text CDATA unwraps to its logical
-        text (a CDATA amount counts, it does not vanish). Empty and
-        self-closing elements yield empty text and fail parsing
-        downstream — an occurrence with no amount is unverifiable,
-        never agreement. Non-string input yields no occurrences at all,
-        so every caller fails closed instead of raising on malformed
-        input (#88).
+        Values come from the parsed XML tree — the same document model
+        MessageGuard validates and payment systems consume — never from
+        raw-text pattern matching. A second, text-based view of the
+        document can disagree with the tree (namespace prefixes outside
+        a regex character class, decoys inside processing instructions)
+        and let the rules judge a value no parser reads
+        (GHSA-mrrj-6m2q-jch9).
+
+        - Elements are matched by local name in any namespace; currency
+          attributes likewise. Character references and CDATA are
+          decoded by the parser exactly once.
+        - An amount element with any child node (element, comment, PI)
+          has mixed content whose reading differs between parsers: its
+          text is None and it fails as unparseable.
+        - Empty and self-closing elements yield empty text and fail
+          parsing downstream — an occurrence with no amount is
+          unverifiable, never agreement.
+        - Non-string or unparseable input yields no occurrences, so every
+          caller fails closed instead of raising (#88).
         """
         if not isinstance(xml, str):
             return []
-        uncommented = self._COMMENT_RE.sub("", xml)
-        decoded = self._CDATA_SECTION_RE.sub(self._strip_tagged_cdata, uncommented)
+        root = self._parse_xml_tree(xml)
+        if root is None:
+            return []
         occurrences = []
-        for match in self._AMOUNT_ELEMENT_RE.finditer(decoded):
-            attrs, content = match.group(1), match.group(2)
-            if content is None:
-                occurrences.append((attrs, ""))
+        for element in root.iter():
+            if not isinstance(element.tag, str):
+                continue  # comment / processing-instruction node
+            if self._local_name(element.tag) != self._AMOUNT_LOCAL_NAME:
                 continue
-            cdata = self._CDATA_RE.match(content)
-            occurrences.append((attrs, cdata.group(1) if cdata else content))
+            currencies = frozenset(
+                value
+                for name, value in element.attrib.items()
+                if self._local_name(name) == self._CCY_LOCAL_NAME
+            )
+            text = None if len(element) else (element.text or "")
+            occurrences.append((currencies, text))
         return occurrences
 
-    @staticmethod
-    def _parse_amount_text(raw: str) -> Optional[Decimal]:
-        """Parse one raw amount to an exact Decimal, or None.
+    @classmethod
+    def _parse_amount_text(cls, raw: Optional[str]) -> Optional[Decimal]:
+        """Parse one amount to an exact Decimal, or None.
 
         Decimal (not float) comparison: distinct large monetary values
-        can collapse to one binary float and falsely agree. Non-finite
-        values are rejected — NaN reads as below every bound. Character
-        references are decoded first: a real parser reads `1&#48;00` as
-        1000, and the rules engine must judge the same value it would
-        otherwise false-reject (#88).
+        can collapse to one binary float and falsely agree. The text must
+        be a plain xs:decimal — exponents, grouping separators and other
+        spellings are rejected rather than reinterpreted, so the rules
+        judge only a value every consumer reads identically. Character
+        references were already decoded by the XML parser; decoding again
+        would let an escaped reference become a different number.
         """
+        if raw is None:
+            return None
+        text = raw.strip()
+        if not cls._DECIMAL_LEXICAL_RE.fullmatch(text):
+            return None
         try:
-            value = Decimal(html.unescape(raw).replace(",", "").strip())
+            value = Decimal(text)
         except InvalidOperation:
             return None
         return value if value.is_finite() else None
@@ -678,16 +707,10 @@ class CrossGuard:
         currencies = set()
         missing = False
         conflicting = False
-        for attrs, _text in occurrences:
-            # Tokenize whole name=value pairs, never raw substrings: a
-            # value like Note=" Ccy='USD'" or an attribute like NotCcy
-            # must not read as the currency attribute, and the local
-            # name (after any namespace prefix) is what identifies Ccy.
-            values = {
-                html.unescape(pair.group(3))
-                for pair in cls._ATTR_PAIR_RE.finditer(attrs)
-                if pair.group(1).rsplit(":", 1)[-1] == "Ccy"
-            }
+        for values, _text in occurrences:
+            # Values are the parsed attributes whose local name is Ccy:
+            # a decoy inside another attribute's value, or an attribute
+            # such as NotCcy, never reads as the currency.
             if not values:
                 # An occurrence without Ccy must fail: otherwise one
                 # compliant currency masks a currency-less sibling.
