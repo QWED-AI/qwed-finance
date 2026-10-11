@@ -32,7 +32,7 @@ class VerifiedToolCall:
     """Result of a verified tool call"""
     status: ToolCallStatus
     tool_name: str
-    original_args: Dict[str, Any]
+    original_args: Any
     verified_args: Optional[Dict[str, Any]] = None
     result: Optional[Any] = None
     error: Optional[str] = None
@@ -258,7 +258,23 @@ class OpenResponsesIntegration:
     # ==================== Verification Functions ====================
     
     def _verify_npv(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute NPV — returns COMPUTED status (not verified against LLM claim)."""
+        """Compute NPV — returns COMPUTED status (not verified against LLM claim).
+
+        Declared schema is enforced: out-of-contract arguments (wrong types,
+        bools-as-numbers, out-of-range rate, missing required fields) are
+        REJECTED instead of silently computed (#73).
+        """
+        failure = self._schema_violation("calculate_npv", args)
+        if failure:
+            error, retry_message, violation = failure
+            return self._reject_computation(
+                "calculate_npv",
+                "OpenResponses.calculate_npv",
+                args,
+                error,
+                retry_message,
+                violation,
+            )
         cashflows = args.get("cashflows", [])
         rate = args.get("rate", 0)
         
@@ -291,10 +307,27 @@ class OpenResponsesIntegration:
         )
     
     def _verify_loan_payment(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute loan payment — returns COMPUTED status (not verified against LLM claim)."""
+        """Compute loan payment — returns COMPUTED status (not verified against LLM claim).
+
+        Declared schema is enforced: out-of-contract arguments (negative
+        principal, out-of-range rate, non-integer or non-positive months,
+        missing required fields) are REJECTED instead of silently
+        computed (#73).
+        """
+        failure = self._schema_violation("calculate_loan_payment", args)
+        if failure:
+            error, retry_message, violation = failure
+            return self._reject_computation(
+                "calculate_loan_payment",
+                "OpenResponses.calculate_loan_payment",
+                args,
+                error,
+                retry_message,
+                violation,
+            )
         principal = args.get("principal", 0)
         annual_rate = args.get("annual_rate", 0)
-        months = args.get("months", 1)
+        months = int(args.get("months", 1))
         
         # Compute payment using Decimal for exact arithmetic
         from decimal import Decimal, ROUND_HALF_UP
@@ -423,50 +456,234 @@ class OpenResponsesIntegration:
             receipt=receipt
         )
     
-    def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute Black-Scholes option price — delegates to DerivativesGuard.
-        
-        Single source of truth: uses the same mpmath-based implementation
-        as self.derivatives to ensure deterministic consistency across paths.
+    def _reject_computation(
+        self,
+        tool_name: str,
+        guard_name: str,
+        args: Any,
+        error: str,
+        retry_message: str,
+        violation: str,
+    ) -> VerifiedToolCall:
+        """Fail closed without computing. Receipt is logged; exception text is not.
+
+        args is preserved verbatim (even non-dict payloads) so the audit
+        receipt's input hash and preview identify what was submitted.
         """
-        S = args.get("spot_price", 100)
-        K = args.get("strike_price", 100)
-        T = args.get("time_to_expiry", 1)
-        r = args.get("risk_free_rate", 0.05)
-        sigma = args.get("volatility", 0.2)
-        opt_type = OptionType.CALL if args.get("option_type") == "call" else OptionType.PUT
-        
-        # Fail-closed: reject non-positive inputs that would cause math errors
-        if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
-            return VerifiedToolCall(
-                status=ToolCallStatus.REJECTED,
-                tool_name="price_option",
-                original_args=args,
-                error="spot_price, strike_price, time_to_expiry, and volatility must be > 0",
-                retry_message="Provide strictly positive inputs for Black-Scholes pricing.",
-            )
-        
-        # Delegate to self.derivatives — single source of truth (mpmath)
-        bs_result = self.derivatives.verify_black_scholes(
-            spot_price=S,
-            strike_price=K,
-            time_to_expiry=T,
-            risk_free_rate=r,
-            volatility=sigma,
-            option_type=opt_type,
-            llm_price="$0.00"  # Placeholder — we only need computed_price
+        receipt = ReceiptGenerator.create_receipt(
+            guard_name=guard_name,
+            engine=VerificationEngine.SYMPY,
+            llm_output=str(args),
+            verified=False,
+            computed_value="rejected_invalid_arguments",
+            violations=[violation],
         )
-        
+        self.audit_log.log(receipt)
+        return VerifiedToolCall(
+            status=ToolCallStatus.REJECTED,
+            tool_name=tool_name,
+            original_args=args,
+            error=error,
+            retry_message=retry_message,
+            receipt=receipt,
+        )
+
+    def _reject_option_price(
+        self,
+        args: Any,
+        error: str,
+        retry_message: str,
+        violation: str,
+    ) -> VerifiedToolCall:
+        """Fail closed without pricing. Receipt is logged; exception text is not."""
+        return self._reject_computation(
+            "price_option",
+            "OpenResponses.price_option",
+            args,
+            error,
+            retry_message,
+            violation,
+        )
+
+    def _check_schema_value(
+        self, name: str, value: Any, spec: Dict[str, Any]
+    ) -> Optional[str]:
+        """Check one value against its declared parameter schema.
+
+        Returns a violation string, or None when the value is in-contract.
+        bool is never accepted as a number/integer (bool is an int subclass).
+        """
+        expected = spec.get("type")
+        if expected == "number":
+            # bool is an int subclass and must not be treated as a number.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"{name} must be a finite number"
+            if value != value or value in (float("inf"), float("-inf")):
+                return f"{name} must be a finite number"
+        elif expected == "integer":
+            if isinstance(value, bool):
+                return f"{name} must be an integer"
+            if isinstance(value, float):
+                if value != value or value in (float("inf"), float("-inf")):
+                    return f"{name} must be an integer"
+                if not value.is_integer():
+                    return f"{name} must be an integer"
+            elif not isinstance(value, int):
+                return f"{name} must be an integer"
+        elif expected == "string":
+            if not isinstance(value, str):
+                return f"{name} must be a string"
+        elif expected == "array":
+            if not isinstance(value, list):
+                return f"{name} must be an array"
+            items = spec.get("items", {})
+            for i, item in enumerate(value):
+                item_violation = self._check_schema_value(f"{name}[{i}]", item, items)
+                if item_violation:
+                    return item_violation
+            return None
+        else:
+            return None
+
+        if "enum" in spec and value not in spec["enum"]:
+            return f"{name} must be one of {spec['enum']}"
+        minimum = spec.get("minimum")
+        if minimum is not None and value < minimum:
+            return f"{name} must be >= {minimum}"
+        maximum = spec.get("maximum")
+        if maximum is not None and value > maximum:
+            return f"{name} must be <= {maximum}"
+        return None
+
+    def _schema_violation(
+        self, tool_name: str, args: Any
+    ) -> Optional[tuple]:
+        """Validate args against the tool's declared parameters schema.
+
+        Returns (error, retry_message, violation), or None when in-contract.
+        """
+        schema = self.tools[tool_name].parameters
+        required = schema.get("required", [])
+        if not isinstance(args, dict):
+            return (
+                f"{tool_name} arguments must be an object.",
+                f"Provide {', '.join(required)}.",
+                "arguments must be an object",
+            )
+        for name in required:
+            if name not in args:
+                return (
+                    f"Missing required field: {name}.",
+                    f"Provide {', '.join(required)}.",
+                    f"{name} is required",
+                )
+        for name, subschema in schema.get("properties", {}).items():
+            if name not in args:
+                continue
+            violation = self._check_schema_value(name, args[name], subschema)
+            if violation:
+                return (
+                    f"{violation}.",
+                    f"Provide {', '.join(required)} matching the declared schema.",
+                    violation,
+                )
+        return None
+
+    def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
+        """Compute Black-Scholes option price, delegating to DerivativesGuard.
+
+        Declared schema is enforced: option_type is exactly call or put.
+        Anything else used to price as a put while the receipt still
+        described a call (#73). Missing fields are rejected rather than
+        filled from defaults.
+        """
+        if not isinstance(args, dict):
+            return self._reject_option_price(
+                args,
+                "price_option arguments must be an object.",
+                "Provide spot_price, strike_price, time_to_expiry, "
+                "risk_free_rate, volatility, and option_type.",
+                "arguments must be an object",
+            )
+        option_type = args.get("option_type")
+        if option_type not in ("call", "put"):
+            return self._reject_option_price(
+                args,
+                "option_type must be exactly 'call' or 'put'.",
+                "Provide option_type as the string 'call' or 'put'.",
+                "option_type must be exactly call or put",
+            )
+
+        required_positive = (
+            "spot_price",
+            "strike_price",
+            "time_to_expiry",
+            "volatility",
+        )
+        numbers: Dict[str, float] = {}
+        for name in (*required_positive, "risk_free_rate"):
+            if name not in args:
+                return self._reject_option_price(
+                    args,
+                    f"Missing required field: {name}.",
+                    "Provide spot_price, strike_price, time_to_expiry, "
+                    "risk_free_rate, volatility, and option_type.",
+                    f"{name} is required",
+                )
+            value = args[name]
+            # bool is an int subclass and must not be treated as a price.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return self._reject_option_price(
+                    args,
+                    f"{name} must be a finite number.",
+                    "Provide numeric Black-Scholes inputs; booleans and "
+                    "strings are not accepted.",
+                    f"{name} must be a finite number",
+                )
+            if value != value or value in (float("inf"), float("-inf")):
+                return self._reject_option_price(
+                    args,
+                    f"{name} must be a finite number.",
+                    "Provide finite Black-Scholes inputs.",
+                    f"{name} must be a finite number",
+                )
+            numbers[name] = value
+
+        if any(numbers[name] <= 0 for name in required_positive):
+            return self._reject_option_price(
+                args,
+                "spot_price, strike_price, time_to_expiry, and volatility must be > 0",
+                "Provide strictly positive inputs for Black-Scholes pricing.",
+                "spot_price, strike_price, time_to_expiry, and volatility must be > 0",
+            )
+
+        opt_type = OptionType.CALL if option_type == "call" else OptionType.PUT
+        formula = (
+            "Black-Scholes: C = S*N(d1) - K*e^(-rT)*N(d2)"
+            if option_type == "call"
+            else "Black-Scholes: P = K*e^(-rT)*N(-d2) - S*N(-d1)"
+        )
+
+        bs_result = self.derivatives.verify_black_scholes(
+            spot_price=numbers["spot_price"],
+            strike_price=numbers["strike_price"],
+            time_to_expiry=numbers["time_to_expiry"],
+            risk_free_rate=numbers["risk_free_rate"],
+            volatility=numbers["volatility"],
+            option_type=opt_type,
+            llm_price="$0.00"  # Placeholder; only computed_price is used
+        )
+
         receipt = ReceiptGenerator.create_receipt(
             guard_name="OpenResponses.price_option",
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
             verified=False,  # Computed, not verified against LLM claim
             computed_value=bs_result.computed_price,
-            formula="Black-Scholes: C = S·N(d₁) - K·e^(-rT)·N(d₂)"
+            formula=formula,
         )
         self.audit_log.log(receipt)
-        
+
         return VerifiedToolCall(
             status=ToolCallStatus.COMPUTED,
             tool_name="price_option",
@@ -477,11 +694,11 @@ class OpenResponsesIntegration:
                 "delta": bs_result.greeks.get("delta") if bs_result.greeks else None,
                 "verified": False,
                 "computed": True,
-                "verified_against_llm": False
+                "verified_against_llm": False,
             },
-            receipt=receipt
+            receipt=receipt,
         )
-    
+
     @staticmethod
     def _extract_receipt_meta(
         receipt: Optional[VerificationReceipt],

@@ -10,6 +10,8 @@ Covers:
 
 import re
 
+import pytest
+
 from qwed_finance.integrations.open_responses import (
     OpenResponsesIntegration,
     ToolCallStatus,
@@ -357,3 +359,186 @@ class TestBlackScholesInputGuard:
             },
         )
         assert result.status == ToolCallStatus.REJECTED
+
+class TestOptionTypeSchema:
+    """#73: declared option_type enum must be enforced, not silently priced as put."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def _args(self, **overrides):
+        args = {
+            "spot_price": 100,
+            "strike_price": 100,
+            "time_to_expiry": 1,
+            "risk_free_rate": 0.05,
+            "volatility": 0.2,
+            "option_type": "call",
+        }
+        args.update(overrides)
+        return args
+
+    def test_call_and_put_are_accepted(self):
+        call = self.integration.handle_tool_call("price_option", self._args())
+        put = self.integration.handle_tool_call(
+            "price_option", self._args(option_type="put")
+        )
+        assert call.status == ToolCallStatus.COMPUTED
+        assert put.status == ToolCallStatus.COMPUTED
+        assert call.receipt.formula_used.startswith("Black-Scholes: C =")
+        assert put.receipt.formula_used.startswith("Black-Scholes: P =")
+        assert call.result["price"] != put.result["price"]
+
+    def test_non_enum_option_type_rejected(self):
+        for bad in ("CALL", "Call", "calls", 1, None, True):
+            result = self.integration.handle_tool_call(
+                "price_option", self._args(option_type=bad)
+            )
+            assert result.status == ToolCallStatus.REJECTED, bad
+            assert "option_type" in result.error
+            assert result.retry_message
+            assert result.receipt is not None
+            assert not (result.receipt.formula_used or "").startswith("Black-Scholes: C =")
+
+    def test_missing_option_type_and_empty_payload_rejected(self):
+        args = self._args()
+        del args["option_type"]
+        missing = self.integration.handle_tool_call("price_option", args)
+        empty = self.integration.handle_tool_call("price_option", {})
+        assert missing.status == ToolCallStatus.REJECTED
+        assert empty.status == ToolCallStatus.REJECTED
+        assert empty.status != ToolCallStatus.COMPUTED
+
+    @pytest.mark.parametrize(
+        "field",
+        ["spot_price", "strike_price", "time_to_expiry", "volatility", "risk_free_rate"],
+    )
+    @pytest.mark.parametrize(
+        "bad", [True, "100", None, float("nan"), float("inf"), [100]], ids=str
+    )
+    def test_numeric_fields_reject_non_finite_non_numbers(self, field, bad):
+        """Each numeric field rejects bad values with a valid option_type (#73)."""
+        result = self.integration.handle_tool_call(
+            "price_option", self._args(**{field: bad})
+        )
+        assert result.status == ToolCallStatus.REJECTED, (field, bad)
+        assert result.retry_message
+        assert result.receipt is not None
+
+    @pytest.mark.parametrize(
+        "field",
+        ["spot_price", "strike_price", "time_to_expiry", "volatility", "risk_free_rate"],
+    )
+    def test_numeric_fields_reject_missing(self, field):
+        """Each numeric field is required even with a valid option_type (#73)."""
+        args = self._args()
+        del args[field]
+        result = self.integration.handle_tool_call("price_option", args)
+        assert result.status == ToolCallStatus.REJECTED, field
+        assert result.retry_message
+        assert result.receipt is not None
+
+    def test_negative_risk_free_rate_still_computed(self):
+        """Negative rates are legal; only positivity-gated fields reject."""
+        result = self.integration.handle_tool_call(
+            "price_option", self._args(risk_free_rate=-0.01)
+        )
+        assert result.status == ToolCallStatus.COMPUTED
+
+
+class TestComputationSchemaEnforcement:
+    """#73 (scope extension): NPV and loan tools must enforce declared schemas."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def _npv(self, **overrides):
+        args = {"cashflows": [-1000, 300, 400, 500], "rate": 0.1}
+        args.update(overrides)
+        return args
+
+    def _loan(self, **overrides):
+        args = {"principal": 100000, "annual_rate": 0.06, "months": 360}
+        args.update(overrides)
+        return args
+
+    def _assert_rejected(self, tool_name, args):
+        result = self.integration.handle_tool_call(tool_name, args)
+        assert result.status == ToolCallStatus.REJECTED, args
+        assert result.retry_message
+        assert result.receipt is not None
+        assert "rejected_invalid_arguments" in str(
+            getattr(result.receipt, "computed_value", "")
+        )
+        return result
+
+    def test_npv_bool_rate_rejected(self):
+        self._assert_rejected("calculate_npv", self._npv(rate=True))
+
+    def test_npv_out_of_range_rate_rejected(self):
+        self._assert_rejected("calculate_npv", self._npv(rate=5))
+
+    def test_npv_missing_rate_rejected(self):
+        args = self._npv()
+        del args["rate"]
+        self._assert_rejected("calculate_npv", args)
+
+    def test_npv_missing_cashflows_rejected(self):
+        args = self._npv()
+        del args["cashflows"]
+        self._assert_rejected("calculate_npv", args)
+
+    def test_npv_non_numeric_cashflow_rejected(self):
+        self._assert_rejected(
+            "calculate_npv", self._npv(cashflows=[-1000, "300", 400])
+        )
+
+    def test_npv_valid_still_computed(self):
+        result = self.integration.handle_tool_call(
+            "calculate_npv", self._npv()
+        )
+        assert result.status == ToolCallStatus.COMPUTED
+
+    def test_loan_negative_principal_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(principal=-100000))
+
+    def test_loan_negative_months_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(months=-12))
+
+    def test_loan_bool_months_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(months=True))
+
+    def test_loan_out_of_range_rate_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(annual_rate=7))
+
+    def test_loan_empty_payload_rejected(self):
+        self._assert_rejected("calculate_loan_payment", {})
+
+    def test_loan_valid_still_computed(self):
+        result = self.integration.handle_tool_call(
+            "calculate_loan_payment", self._loan()
+        )
+        assert result.status == ToolCallStatus.COMPUTED
+
+    @pytest.mark.parametrize(
+        "tool_name", ["price_option", "calculate_npv", "calculate_loan_payment"]
+    )
+    @pytest.mark.parametrize("bad", [[100, 200], "[100, 200]"])
+    def test_non_dict_args_rejected_not_error(self, tool_name, bad):
+        """Non-dict payloads fail closed as REJECTED with a receipt, not ERROR."""
+        result = self.integration.handle_tool_call(tool_name, bad)
+        assert result.status == ToolCallStatus.REJECTED, (tool_name, bad)
+        assert result.retry_message
+        assert result.receipt is not None
+
+    @pytest.mark.parametrize(
+        "tool_name", ["price_option", "calculate_npv", "calculate_loan_payment"]
+    )
+    def test_rejected_non_dict_preserves_submitted_value(self, tool_name):
+        """Distinct rejected payloads must be distinguishable in the audit trail."""
+        first = self.integration.handle_tool_call(tool_name, [100, 200])
+        second = self.integration.handle_tool_call(tool_name, [300, 400])
+        assert first.original_args == [100, 200]
+        assert second.original_args == [300, 400]
+        assert first.receipt.input_hash != second.receipt.input_hash
+

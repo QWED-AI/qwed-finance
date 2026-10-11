@@ -8,6 +8,16 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+### Fixed
+
+- `price_option` rejects anything other than exactly `call` or `put`,
+  rejects missing numeric inputs instead of filling defaults, and records
+  the put formula on put receipts (#73).
+- `calculate_npv` and `calculate_loan_payment` enforce their declared
+  parameter schemas (types with bools excluded from numbers, bounds,
+  required fields, integer months) and reject out-of-contract arguments
+  instead of silently computing (#73).
+
 ## [3.0.1] - 2026-10-09
 
 ### Security
@@ -42,7 +52,6 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   previously bypassed the allow-list and PII checks. `sanitize_query` no
   longer rewrites such queries. Ordinary comments and optimizer hints
   (`/*+ ... */`) are unaffected.
-
 ## [3.0.0] - 2026-09-27
 
 ### Changed
