@@ -17,6 +17,10 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   parameter schemas (types with bools excluded from numbers, bounds,
   required fields, integer months) and reject out-of-contract arguments
   instead of silently computing (#73).
+- `QueryGuard.verify_readonly_safety` reports a top-level `DELETE`,
+  `INSERT` or `UPDATE` once instead of twice: the keyword scan and the AST
+  wrote the same violation. Separate AST findings, such as two mutating
+  subqueries, are all kept; verdicts and risk levels are unchanged.
 
 ## [3.0.1] - 2026-10-09
 
