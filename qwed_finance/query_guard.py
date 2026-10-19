@@ -114,7 +114,12 @@ class QueryGuard:
             ast_result = self._analyze_with_sqlglot(sql_query)
             query_type = ast_result["query_type"]
             tables = ast_result["tables"]
-            violations.extend(ast_result["violations"])
+            # The keyword scan and the AST report a top-level mutation in the
+            # same words ("Mutation detected: DELETE statement"); keep one.
+            # Only matches against the keyword scan are dropped, so separate
+            # AST findings (two mutating subqueries) all stay.
+            from_keywords = set(violations)
+            violations.extend(v for v in ast_result["violations"] if v not in from_keywords)
         else:
             # Fallback: basic parsing
             query_type = self._detect_query_type(sql_upper)
