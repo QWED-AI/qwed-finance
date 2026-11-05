@@ -525,8 +525,8 @@ class UCPIntegration:
             "description": "Deterministic verification for payment tokens, ISO 20022 messages, and loan calculations using symbolic solvers.",
             "provider": {
                 "name": "QWED-AI",
-                "url": "https://qwedai.com",
-                "contact": "support@qwedai.com"
+                "url": "https://qwedai.tech",
+                "contact": "support@qwedai.tech"
             },
             "supported_operations": [
                 {

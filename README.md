@@ -9,7 +9,7 @@
 [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance)
 [![GitHub Developer Program](https://img.shields.io/badge/GitHub_Developer_Program-Member-4c1?style=flat&logo=github)](https://github.com/QWED-AI)
 [![Secured by Snyk](https://img.shields.io/badge/Secured_by-Snyk-4C3DBC?style=flat&logo=snyk&logoColor=white)](https://snyk.io/test/github/QWED-AI/qwed-finance)
-[![Docs by Mintlify](https://img.shields.io/badge/Docs_by-Mintlify-0f1117?style=flat&logo=mintlify&logoColor=white)](https://docs.qwedai.com)
+[![Docs by Mintlify](https://img.shields.io/badge/Docs_by-Mintlify-0f1117?style=flat&logo=mintlify&logoColor=white)](https://docs.qwedai.tech)
 [![PyPI](https://img.shields.io/pypi/v/qwed-finance?color=blue)](https://pypi.org/project/qwed-finance/)
 [![npm](https://img.shields.io/npm/v/@qwed-ai/finance?color=red)](https://www.npmjs.com/package/@qwed-ai/finance)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -512,7 +512,7 @@ QWED-Finance uses **SymPy** (symbolic math) instead of floating-point arithmetic
 "$0.30"  # Exact!
 ```
 
-> 📖 **See [Determinism Guarantee](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)** for how QWED ensures 100% reproducible verification.
+> 📖 **See [Determinism Guarantee](https://docs.qwedai.tech/docs/engines/overview#deterministic-first-philosophy)** for how QWED ensures 100% reproducible verification.
 
 ## 🔒 Security & Privacy
 
@@ -707,8 +707,8 @@ Show that your project uses QWED verification! Choose the badge that matches you
 | Badge | Use Case | Markdown |
 |-------|----------|----------|
 | [![Verified by QWED](https://img.shields.io/badge/Verified_by-QWED-00C853?style=flat&logo=checkmarx)](https://github.com/QWED-AI/qwed-finance) | **General** - Any QWED-Finance integration | See below |
-| [![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy) | **FinanceVerifier/BondGuard** - Symbolic math only | See below |
-| [![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy) | **ComplianceGuard** - Z3 + LLM hybrid | See below |
+| [![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.tech/docs/engines/overview#deterministic-first-philosophy) | **FinanceVerifier/BondGuard** - Symbolic math only | See below |
+| [![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.tech/docs/engines/overview#deterministic-first-philosophy) | **ComplianceGuard** - Z3 + LLM hybrid | See below |
 
 ### Markdown Code
 
@@ -719,12 +719,12 @@ Show that your project uses QWED verification! Choose the badge that matches you
 
 **100% Deterministic (for FinanceVerifier, CalendarGuard, BondGuard, FXGuard):**
 ```markdown
-[![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)
+[![100% Deterministic](https://img.shields.io/badge/100%25_Deterministic-QWED-0066CC?style=flat&logo=checkmarx)](https://docs.qwedai.tech/docs/engines/overview#deterministic-first-philosophy)
 ```
 
 **AI + Verification (for ComplianceGuard with Z3):**
 ```markdown
-[![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.com/docs/engines/overview#deterministic-first-philosophy)
+[![AI + Verification](https://img.shields.io/badge/AI_%2B_Verification-QWED-9933CC?style=flat&logo=checkmarx)](https://docs.qwedai.tech/docs/engines/overview#deterministic-first-philosophy)
 ```
 
 ---

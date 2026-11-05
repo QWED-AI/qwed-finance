@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Rahul Dass", email = "rahul@qwedai.com"}
+    {name = "Rahul Dass", email = "rahul@qwedai.tech"}
 ]
 keywords = [
     "ai",
@@ -57,7 +57,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/QWED-AI/qwed-finance"
-Documentation = "https://docs.qwedai.com"
+Documentation = "https://docs.qwedai.tech"
 Repository = "https://github.com/QWED-AI/qwed-finance"
 Issues = "https://github.com/QWED-AI/qwed-finance/issues"
 
