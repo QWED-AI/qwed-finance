@@ -20,13 +20,13 @@
         "kyc",
         "compliance"
     ],
-    "author": "QWED-AI <rahul@qwedai.com>",
+    "author": "QWED-AI <rahul@qwedai.tech>",
     "license": "Apache-2.0",
     "repository": {
         "type": "git",
         "url": "https://github.com/QWED-AI/qwed-finance.git"
     },
-    "homepage": "https://docs.qwedai.com/docs/finance/overview",
+    "homepage": "https://docs.qwedai.tech/docs/finance/overview",
     "bugs": {
         "url": "https://github.com/QWED-AI/qwed-finance/issues"
     },
