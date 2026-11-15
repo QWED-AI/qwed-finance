@@ -73,10 +73,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Add the licence files to the package
-        # Both live at the repository root; package.json lists them in "files".
-        run: cp ../LICENSE ../NOTICE .
-
       # prepublishOnly runs npm run build before packing
       - run: npm publish --access public --provenance
         env:
