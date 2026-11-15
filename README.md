@@ -733,6 +733,8 @@ Show that your project uses QWED verification! Choose the badge that matches you
 
 Apache 2.0 - See [LICENSE](LICENSE)
 
+Redistributions keep the attribution in [NOTICE](https://github.com/QWED-AI/qwed-finance/blob/main/NOTICE), and [TRADEMARKS.md](https://github.com/QWED-AI/qwed-finance/blob/main/TRADEMARKS.md) says how the QWED name and logo may be used.
+
 ---
 
 ## 🤝 Contributing
