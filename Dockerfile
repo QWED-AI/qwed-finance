@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python dependencies from project metadata (single source of truth)
 COPY qwed_finance/ /app/qwed_finance/
 COPY pyproject.toml /app/pyproject.toml
+# The installed package carries the licence and the NOTICE attribution.
+COPY LICENSE NOTICE /app/
 RUN pip install --no-cache-dir /app
 
 # Copy action entrypoint
