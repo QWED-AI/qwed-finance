@@ -985,14 +985,79 @@ def test_concurrent_mutation_during_log_cannot_reach_retained_evidence(monkeypat
         signer.verify_receipt(receipt)
 
 
-@pytest.mark.parametrize(
-    "field, value",
-    [("engine_used", "Decimal"), ("status", "verified")],
-)
-def test_non_enum_field_fails_closed_at_export(field, value):
+def test_non_enum_engine_fails_closed_at_export():
     """A retained receipt whose enum field became a plain string refuses as
     a verification error, not a raw AttributeError from serialisation."""
     log = make_log(make_signer(), count=1)
-    setattr(log.receipts[0], field, value)
+    log.receipts[0].engine_used = "Decimal"
     with pytest.raises(ReceiptSignatureError):
         log.export_json()
+
+
+def test_non_enum_status_fails_closed_at_export():
+    log = make_log(make_signer(), count=1)
+    log.receipts[0].status = "verified"
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()
+
+
+class _AliasingDict(dict):
+    """Metadata that defeats copy.deepcopy by returning itself."""
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def test_deepcopy_hook_cannot_alias_retained_evidence(monkeypatch):
+    """The retained snapshot is built without caller-defined copy hooks, so
+    a metadata object that returns itself from __deepcopy__ cannot carry a
+    post-verification edit into what log() signs and retains."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = _AliasingDict(rule="genuine")
+    signer.sign_receipt(receipt)
+    log = AuditLog(signer=signer)
+
+    real_verify = signer.verify_receipt
+
+    def verify_then_race(target):
+        real_verify(target)
+        receipt.metadata["rule"] = "forged"
+
+    monkeypatch.setattr(signer, "verify_receipt", verify_then_race)
+    log.log(receipt)
+    monkeypatch.setattr(signer, "verify_receipt", real_verify)
+
+    retained = log.receipts[0]
+    assert type(retained.metadata) is dict
+    assert retained.metadata == {"rule": "genuine"}
+    export = log.export_json()
+    assert json.loads(export)["receipts"][0]["metadata"] == {"rule": "genuine"}
+    log.verify_export_json(export)
+
+
+def _deeply_nested(depth: int):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_deeply_nested_json_text_refuses_to_verify():
+    """Nesting past the recursion limit is a verification failure, not a
+    RecursionError escaping the documented contract."""
+    log = AuditLog(signer=make_signer())
+    depth = 100_000
+    hostile = "[" * depth + "]" * depth
+    with pytest.raises(ReceiptSignatureError):
+        log.verify_export_json(hostile)
+
+
+def test_deeply_nested_parsed_export_refuses_to_verify():
+    signer = make_signer()
+    document = json.loads(signed_export())
+    document["receipts"][0]["metadata"] = {"deep": _deeply_nested(100_000)}
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)

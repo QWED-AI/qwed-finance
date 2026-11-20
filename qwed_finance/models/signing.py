@@ -342,7 +342,7 @@ class ReceiptSigner:
         key = self._lookup_key(kid, what=f"receipt {receipt_id}")
         try:
             content = receipt.to_dict()
-        except (AttributeError, TypeError, ValueError) as error:
+        except (AttributeError, TypeError, ValueError, RecursionError) as error:
             raise ReceiptSignatureError(
                 f"receipt {receipt_id} cannot be canonically encoded for "
                 f"verification: {error}"
@@ -493,7 +493,7 @@ class ReceiptSigner:
         """
         try:
             canonical = _canonical_json(content)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, RecursionError) as error:
             raise ReceiptSignatureError(
                 f"{what} cannot be canonically encoded for verification: {error}"
             ) from error

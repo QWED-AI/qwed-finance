@@ -357,6 +357,30 @@ class ReceiptGenerator:
         )
 
 
+def _detached_snapshot(receipt: VerificationReceipt) -> VerificationReceipt:
+    """Copy a receipt as plain JSON data, without running caller code.
+
+    copy.deepcopy honours ``__deepcopy__`` on caller-supplied metadata, so
+    a dict or list subclass can return itself and keep the "copy" aliased
+    to the caller's object. Instead the content is read once through
+    ``to_dict()`` and round-tripped through canonical JSON: the snapshot
+    holds only built-in str, int, float, bool, None, list and dict, with
+    nothing shared with the caller. The canonical encoding — and so the
+    signature — is unchanged by the round trip.
+
+    Content that cannot be canonically encoded (unserializable objects,
+    NaN/Infinity, colliding keys) raises here, so it never enters the log.
+    """
+    content = json.loads(json.dumps(receipt.to_dict(), allow_nan=False))
+    content["engine_used"] = VerificationEngine(content["engine_used"])
+    content["status"] = VerificationStatus(content["status"])
+    return VerificationReceipt(
+        **content,
+        signature=receipt.signature,
+        signature_key_id=receipt.signature_key_id,
+    )
+
+
 class AuditLog:
     """
     In-memory audit log for verification receipts.
@@ -398,13 +422,15 @@ class AuditLog:
         The log retains an independent snapshot of the signed receipt, so
         later changes to the caller's object — including a second log
         re-signing it under another key — never alter the evidence this
-        log holds. The snapshot is taken once, before verification, and
-        that one copy is verified, signed and retained, so the verified,
+        log holds. The snapshot is taken once, before verification, as
+        plain JSON data (no caller-defined copy hooks run, so nothing in it
+        can stay aliased to the caller's object), and that one copy is
+        verified, signed and retained, so the verified,
         signed and retained content are identical even if the caller's
         object changes concurrently. The new signature is then written
         back to the caller's receipt.
         """
-        snapshot = copy.deepcopy(receipt)
+        snapshot = _detached_snapshot(receipt)
         if self.signer is not None:
             if (snapshot.signature is None) != (snapshot.signature_key_id is None):
                 raise ReceiptSignatureError(
@@ -513,6 +539,10 @@ class AuditLog:
             document = json.loads(export, object_pairs_hook=_reject_duplicate_keys)
         except json.JSONDecodeError as error:
             raise ReceiptSignatureError(f"export is not valid JSON: {error}") from error
+        except RecursionError:
+            raise ReceiptSignatureError(
+                "export nests deeper than the parser's recursion limit"
+            ) from None
         self.signer.verify_export_document(document)
 
     def summary(self) -> Dict[str, Any]:
