@@ -533,8 +533,14 @@ generate one with `python -c "import secrets; print(secrets.token_hex(32))"`.
 To rotate keys, set `QWED_RECEIPT_SIGNING_KEY` to the new key and keep the
 retired one in `QWED_RECEIPT_VERIFICATION_KEYS` (comma-separated) while
 evidence signed under it must still verify. A malformed or too-short key
-fails loudly at startup rather than signing nothing; an unset key leaves
-exports explicitly unsigned.
+fails loudly when the audit log is initialized rather than signing
+nothing; an unset key leaves exports explicitly unsigned. To disable
+signing, unset both variables — leaving only
+`QWED_RECEIPT_VERIFICATION_KEYS` set raises instead of silently
+producing unsigned exports. Both variables are read when an `AuditLog` is
+constructed, so a rotation takes effect for new logs: restart the
+process or recreate the log, and export any evidence you still need
+from an in-memory log before replacing it.
 
 **Perfect for:**
 - Banks with strict data residency requirements

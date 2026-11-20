@@ -1,2 +1,15 @@
+# QWED Security policy for this repository. Read from the base branch, so a
+# pull request never weakens the scan that checks it.
+#
+# models/signing.py declares the *names* of the receipt-signing environment
+# variables as module constants (SIGNING_KEY_ENV-style, the same as
+# qwed-verification's src/qwed_new/core/attestation.py). The values are
+# public configuration names, not credentials — no key material appears in
+# the file; the variables are read at runtime with os.environ.get. The
+# hardcoded-secret pattern cannot tell an env-var name from a secret, so
+# the declaration lines trip it. Scoped to that file only: nothing else in
+# the package declares credential-shaped literals.
 treat_unknown_as_block: true
 ignore_patterns_in_tests: true
+suppressions:
+  - pattern=hardcoded-secret reason=false-positive path=qwed_finance/models/signing.py

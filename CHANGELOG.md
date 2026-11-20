@@ -34,15 +34,32 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 - **`AuditLog.export_json` returns a signed envelope object, not a bare
   array (breaking).** The export is now
   `{"schema": "qwed-finance/audit-log/v1", "alg": "HMAC-SHA256",
-  "signature_key_id", "signature", "receipts": [...]}`; each receipt
-  carries its own `signature` and `signature_key_id`, and the envelope
-  signature covers everything else in the document, so truncation and
-  reordering of an export are detectable, which per-receipt signatures
-  alone cannot do. Without a signer configured the envelope is explicitly
-  unsigned (`alg` and signatures `null`). With one configured, the
-  export verifies every receipt first and refuses to ship evidence it
-  cannot vouch for. The envelope stays HMAC — tamper evidence for key
-  holders, not third-party attestation; that envelope is #37.
+  "signature_key_id": "<key id>", "signature": "<hmac hex>",
+  "receipts": [...]}`; each receipt carries its own `signature` and
+  `signature_key_id`, and the envelope signature covers everything else
+  in the document, so truncation and reordering of an export are
+  detectable, which per-receipt signatures alone cannot do. Without a
+  signer the envelope is explicitly unsigned: `alg`, `signature` and
+  every receipt's signature fields are null — a receipt signed elsewhere
+  does not carry its signature into an unsigned export. With one
+  configured, the export verifies every receipt first and refuses to
+  ship evidence it cannot vouch for. The envelope stays HMAC — tamper
+  evidence for key holders, not third-party attestation; that envelope
+  is #37.
+- `AuditLog.log` retains an independent snapshot of each signed receipt,
+  so mutating the caller's object — or re-signing the same receipt into
+  another log under another key — never changes the evidence a log
+  already holds. Re-signing verifies the existing signature first and
+  refuses on a mismatch (the tamper-then-relog path) or a key outside
+  the rotation window; a half-signed receipt (signature without key id,
+  or the reverse) is refused too.
+- `AuditLog.verify_export_json` parses with duplicate member names
+  refused at every level (`json.loads` keeps only the last value of a
+  repeated name, so a document that could verify here might read
+  differently in a first-wins consumer) and reports invalid JSON as
+  `ReceiptSignatureError`, not `JSONDecodeError`. Non-string key ids and
+  content that cannot be canonically re-encoded also refuse as
+  `ReceiptSignatureError` instead of raising `TypeError`.
 
 ### Fixed
 

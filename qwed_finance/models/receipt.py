@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from enum import Enum
+import copy
 import hashlib
 import hmac
 import json
@@ -48,6 +49,27 @@ RECEIPT_CONTENT_FIELDS = (
     "violations",
     "metadata",
 )
+
+
+def _reject_duplicate_keys(pairs: List[tuple]) -> Dict[str, Any]:
+    """JSON object hook: a repeated member name refuses the whole parse.
+
+    ``json.loads`` keeps only the last value of a repeated name, so a
+    signed export whose text carries two ``verified`` or two ``receipts``
+    members could verify here while a first-wins consumer reads
+    different evidence from the same text. Receipts this package emits
+    can never contain repeats (they serialise Python dicts); only a
+    hand-crafted or tampered document can, and it must not verify.
+    """
+    parsed: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ReceiptSignatureError(
+                f"duplicate JSON member name {key!r} — ambiguous evidence "
+                "does not verify"
+            )
+        parsed[key] = value
+    return parsed
 
 
 class VerificationEngine(Enum):
@@ -357,17 +379,38 @@ class AuditLog:
     def log(self, receipt: VerificationReceipt) -> str:
         """Log a receipt and return its ID.
 
-        Signs the receipt first when a signer is configured, so every
-        retained receipt carries its signature from the moment it enters
-        the audit trail — the signature is minted at retention, not
-        retrofitted at export. A receipt whose metadata cannot be
-        canonically encoded (unserializable objects, NaN/Infinity) raises
-        before it is appended: it must not enter the trail looking signed
-        when it cannot be.
+        Signs the receipt when a signer is configured, so every retained
+        receipt carries its signature from the moment it enters the audit
+        trail — the signature is minted at retention, not retrofitted at
+        export. A receipt whose metadata cannot be canonically encoded
+        (unserializable objects, NaN/Infinity) raises before it is
+        appended: it must not enter the trail looking signed when it
+        cannot be.
+
+        An already-signed receipt is verified before it is re-signed:
+        replacing a signature without checking it would mint a fresh
+        attestation over possibly tampered content, so a receipt whose
+        existing signature does not verify — edited after it was signed,
+        or signed under a key outside this signer's rotation window — is
+        refused. A half-signed receipt (a signature without a key id, or
+        the reverse) is refused the same way.
+
+        The log retains an independent snapshot of the signed receipt, so
+        later changes to the caller's object — including a second log
+        re-signing it under another key — never alter the evidence this
+        log holds.
         """
         if self.signer is not None:
+            if (receipt.signature is None) != (receipt.signature_key_id is None):
+                raise ReceiptSignatureError(
+                    f"receipt {receipt.receipt_id} is half-signed — a "
+                    "signature without a key id (or the reverse) cannot be "
+                    "verified or re-signed"
+                )
+            if receipt.signature is not None:
+                self.signer.verify_receipt(receipt)
             self.signer.sign_receipt(receipt)
-        self.receipts.append(receipt)
+        self.receipts.append(copy.deepcopy(receipt))
         return receipt.receipt_id
 
     def get_receipt(self, receipt_id: str) -> Optional[VerificationReceipt]:
@@ -399,14 +442,23 @@ class AuditLog:
 
         Without a signer the envelope is explicitly unsigned: ``alg``,
         ``signature_key_id`` and ``signature`` are null, and every receipt
-        exports with null signature fields. Unsigned is a state a consumer
-        must opt into, never one it mistakes for signed.
+        exports with null signature fields — a receipt signed elsewhere
+        keeps its signature on the object, but an unsigned envelope is
+        not tamper-evident as a whole, so carrying per-receipt signatures
+        in it would suggest evidence the envelope cannot back. Unsigned
+        is a state a consumer must opt into, never one it mistakes for
+        signed.
+
+        Each receipt is snapshotted before it is verified and serialised,
+        so the exported content is exactly the content that was verified
+        even if another thread mutates the retained receipt mid-export.
         """
+        receipts = []
         if self.signer is not None:
-            receipts = []
             for receipt in self.receipts:
-                self.signer.verify_receipt(receipt)
-                receipts.append(receipt.to_export_dict())
+                snapshot = copy.deepcopy(receipt)
+                self.signer.verify_receipt(snapshot)
+                receipts.append(snapshot.to_export_dict())
             document: Dict[str, Any] = {
                 "schema": EXPORT_SCHEMA,
                 "alg": EXPORT_ALG,
@@ -416,7 +468,11 @@ class AuditLog:
             }
             self.signer.sign_export_document(document)
         else:
-            receipts = [r.to_export_dict() for r in self.receipts]
+            for receipt in self.receipts:
+                snapshot = copy.deepcopy(receipt).to_export_dict()
+                snapshot["signature"] = None
+                snapshot["signature_key_id"] = None
+                receipts.append(snapshot)
             document = {
                 "schema": EXPORT_SCHEMA,
                 "alg": None,
@@ -430,16 +486,26 @@ class AuditLog:
         """Verify an exported audit envelope; raise on any tampering.
 
         Requires a signer: key material is what verification means here.
-        Every failure — unsigned export, unknown key id, envelope or
-        receipt signature mismatch, missing or injected fields — raises
-        ReceiptSignatureError. A clean export returns None.
+        Every failure — invalid JSON, a duplicate member name, unsigned
+        export, unknown key id, envelope or receipt signature mismatch,
+        missing or injected fields — raises ReceiptSignatureError. A clean
+        export returns None.
+
+        Duplicate JSON member names are refused at every level of the
+        parsed document: ``json.loads`` keeps only the last value for a
+        repeated name, so a document that verifies here could still be
+        read differently by a first-wins consumer — ambiguous evidence
+        does not verify.
         """
         if self.signer is None:
             raise ReceiptSignatureError(
                 "no signer configured — provide one (or set "
                 "QWED_RECEIPT_SIGNING_KEY) to verify exports"
             )
-        document = json.loads(export)
+        try:
+            document = json.loads(export, object_pairs_hook=_reject_duplicate_keys)
+        except json.JSONDecodeError as error:
+            raise ReceiptSignatureError(f"export is not valid JSON: {error}") from error
         self.signer.verify_export_document(document)
 
     def summary(self) -> Dict[str, Any]:

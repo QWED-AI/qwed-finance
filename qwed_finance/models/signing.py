@@ -115,6 +115,50 @@ def _key_id(key: bytes) -> str:
     return "hmac-sha256:" + hashlib.sha256(key).hexdigest()[:16]
 
 
+def _validated_key_bytes(key: Any, what: str) -> bytes:
+    """Validate one piece of key material: bytes, and at least 256 bits.
+
+    A string is refused with the passphrase rationale — key material
+    pasted as text is forgeable by anyone who guesses the text — and a
+    short key is refused because a guessable key signs nothing.
+    """
+    if isinstance(key, str):
+        raise SigningKeyError(
+            f"{what} must be bytes — hex-decode the material first "
+            "(a passphrase used directly as a key is forgeable by anyone "
+            "who guesses the passphrase)"
+        )
+    if not isinstance(key, (bytes, bytearray)):
+        raise SigningKeyError(f"{what} must be bytes, not {type(key).__name__}")
+    key = bytes(key)
+    if len(key) < MIN_KEY_BYTES:
+        raise SigningKeyError(
+            f"{what} is {len(key)} bytes; at least {MIN_KEY_BYTES} "
+            f"({MIN_KEY_BYTES * 8} bits) are required"
+        )
+    return key
+
+
+def _verification_key_map(keys: List[bytes]) -> Dict[str, bytes]:
+    """Map key id to key, refusing two different keys under one id.
+
+    Two different keys cannot share a kid without a SHA-256 collision;
+    refusing keeps key lookup unambiguous, so an id always names exactly
+    the key material that earned it.
+    """
+    verification: Dict[str, bytes] = {}
+    for key in keys:
+        kid = _key_id(key)
+        existing = verification.get(kid)
+        if existing is not None and existing != key:
+            raise SigningKeyError(
+                f"two different verification keys share key id {kid!r} "
+                "— key ids must be unique"
+            )
+        verification[kid] = key
+    return verification
+
+
 def _canonical_json(value: Any) -> str:
     """Canonical JSON encoding used for every signature in this module.
 
@@ -155,59 +199,18 @@ class ReceiptSigner:
         signing_key: bytes,
         verification_keys: Optional[Iterable[bytes]] = None,
     ) -> None:
-        if isinstance(signing_key, str):
-            raise SigningKeyError(
-                "signing_key must be bytes — hex-decode the material first "
-                "(a passphrase used directly as a key is forgeable by anyone "
-                "who guesses the passphrase)"
-            )
-        if not isinstance(signing_key, (bytes, bytearray)):
-            raise SigningKeyError(
-                f"signing_key must be bytes, not {type(signing_key).__name__}"
-            )
-        signing_key = bytes(signing_key)
-        if len(signing_key) < MIN_KEY_BYTES:
-            raise SigningKeyError(
-                f"signing_key is {len(signing_key)} bytes; at least "
-                f"{MIN_KEY_BYTES} ({MIN_KEY_BYTES * 8} bits) are required"
-            )
+        signing_key = _validated_key_bytes(signing_key, "signing_key")
 
-        keys: List[bytes] = [signing_key]
+        extra: List[bytes] = []
         if verification_keys is not None:
-            for index, key in enumerate(verification_keys, start=1):
-                if isinstance(key, str):
-                    raise SigningKeyError(
-                        f"verification_keys[{index - 1}] must be bytes, not str"
-                    )
-                if not isinstance(key, (bytes, bytearray)):
-                    raise SigningKeyError(
-                        f"verification_keys[{index - 1}] must be bytes, not "
-                        f"{type(key).__name__}"
-                    )
-                key = bytes(key)
-                if len(key) < MIN_KEY_BYTES:
-                    raise SigningKeyError(
-                        f"verification_keys[{index - 1}] is {len(key)} bytes; "
-                        f"at least {MIN_KEY_BYTES} are required"
-                    )
-                keys.append(key)
-
-        verification: Dict[str, bytes] = {}
-        for key in keys:
-            kid = _key_id(key)
-            existing = verification.get(kid)
-            if existing is not None and existing != key:
-                # Two different keys cannot share a kid without a SHA-256
-                # collision; refusing keeps key lookup unambiguous.
-                raise SigningKeyError(
-                    "two different verification keys share key id "
-                    f"{kid!r} — key ids must be unique"
-                )
-            verification[kid] = key
+            extra = [
+                _validated_key_bytes(key, f"verification_keys[{index - 1}]")
+                for index, key in enumerate(verification_keys, start=1)
+            ]
 
         self._signing_key = signing_key
         self.signing_kid = _key_id(signing_key)
-        self._verification_keys = verification
+        self._verification_keys = _verification_key_map([signing_key, *extra])
 
     @classmethod
     def from_env(cls) -> Optional["ReceiptSigner"]:
@@ -297,11 +300,35 @@ class ReceiptSigner:
 
     # -- verification ----------------------------------------------------
 
+    def _lookup_key(self, kid: Any, *, what: str) -> bytes:
+        """Resolve a key id to its key material, refusing anything else.
+
+        A non-string key id (a list or object from parsed JSON) must not
+        crash the dict lookup with a TypeError — it is a malformed
+        artifact and refuses like every other one. An unlisted string key
+        id is a rotation window that has closed, or a foreign issuer.
+        """
+        if not isinstance(kid, str):
+            raise ReceiptSignatureError(
+                f"{what} names a key id that is not a string "
+                f"({type(kid).__name__}) — it cannot be verified"
+            )
+        key = self._verification_keys.get(kid)
+        if key is None:
+            raise ReceiptSignatureError(
+                f"{what} names key id {kid!r}, which is not in the "
+                "verification set — the rotation window may have closed"
+            )
+        return key
+
     def verify_receipt(self, receipt: Any) -> None:
         """Verify a signed receipt in memory; raise ``ReceiptSignatureError`` otherwise.
 
         Fail-closed: unsigned, tampered, or signed under an unknown key id
-        (a rotation window that has closed) all refuse.
+        (a rotation window that has closed) all refuse. A receipt whose
+        content cannot even be canonically encoded (colliding metadata
+        keys, unserializable values) also refuses — a verification error,
+        never a raw TypeError from the normalisation step.
         """
         receipt_id = getattr(receipt, "receipt_id", "<unknown>")
         signature = getattr(receipt, "signature", None)
@@ -311,15 +338,17 @@ class ReceiptSigner:
                 f"receipt {receipt_id} is unsigned — only signed receipts "
                 "may be treated as audit evidence"
             )
-        key = self._verification_keys.get(kid)
-        if key is None:
+        key = self._lookup_key(kid, what=f"receipt {receipt_id}")
+        try:
+            content = receipt.to_dict()
+        except (TypeError, ValueError) as error:
             raise ReceiptSignatureError(
-                f"receipt {receipt_id} names key id {kid!r}, which is not in "
-                "the verification set — the rotation window may have closed"
-            )
+                f"receipt {receipt_id} cannot be canonically encoded for "
+                f"verification: {error}"
+            ) from error
         self._verify_mac(
             key,
-            receipt.to_dict(),
+            content,
             signature,
             what=f"receipt {receipt_id}",
         )
@@ -368,12 +397,7 @@ class ReceiptSigner:
                 f"export signature must be a hex string, not "
                 f"{type(signature).__name__}"
             )
-        key = self._verification_keys.get(kid)
-        if key is None:
-            raise ReceiptSignatureError(
-                f"export names key id {kid!r}, which is not in the "
-                "verification set — the rotation window may have closed"
-            )
+        key = self._lookup_key(kid, what="export")
 
         content = {k: v for k, v in document.items() if k != "signature"}
         self._verify_mac(key, content, signature, what="export", domain=EXPORT_SCHEMA)
@@ -431,12 +455,7 @@ class ReceiptSigner:
                 f"{where} signature must be a hex string, not "
                 f"{type(signature).__name__}"
             )
-        key = self._verification_keys.get(kid)
-        if key is None:
-            raise ReceiptSignatureError(
-                f"{where} names key id {kid!r}, which is not in the "
-                "verification set — the rotation window may have closed"
-            )
+        key = self._lookup_key(kid, what=where)
 
         content = {
             k: v for k, v in payload.items() if k not in _RECEIPT_SIGNATURE_FIELDS
