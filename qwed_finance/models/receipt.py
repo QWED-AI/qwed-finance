@@ -618,7 +618,7 @@ class AuditLog:
         try:
             document = json.loads(export, object_pairs_hook=_reject_duplicate_keys)
         except ValueError as error:
-            # JSONDecodeError, and the plain ValueError Python 3.11+ raises
+            # JSONDecodeError, and the plain ValueError Python 3.10.7+ raises
             # for an integer literal past the digit limit.
             raise ReceiptSignatureError(f"export is not valid JSON: {error}") from error
         except RecursionError:

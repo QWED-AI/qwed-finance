@@ -14,6 +14,7 @@ while evidence signed under them must still verify, and close afterwards.
 
 import hashlib
 import json
+import sys
 
 import pytest
 
@@ -1064,8 +1065,8 @@ def test_deeply_nested_parsed_export_refuses_to_verify():
 
 
 def test_oversized_integer_literal_refuses_to_verify():
-    """Python's integer-digit limit raises a plain ValueError, which is not a
-    JSONDecodeError; it must still surface as a verification failure."""
+    """Python's integer-digit limit (3.10.7+) raises a plain ValueError, which
+    is not a JSONDecodeError; it must still surface as a verification failure."""
     log = AuditLog(signer=make_signer())
     hostile = '{"schema": ' + "1" * 5000 + "}"
     with pytest.raises(ReceiptSignatureError):
@@ -1212,13 +1213,18 @@ def test_nesting_depth_memory_does_not_grow_with_width():
     from qwed_finance.models.receipt import _nesting_depth
 
     wide = [{"tags": list(range(1_000_000))}]
-    tracemalloc.start()
+    started_here = not tracemalloc.is_tracing()
+    if started_here:
+        tracemalloc.start()
     try:
+        baseline, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         assert _nesting_depth(wide) == 3
         _, peak = tracemalloc.get_traced_memory()
     finally:
-        tracemalloc.stop()
-    assert peak < 64 * 1024
+        if started_here:
+            tracemalloc.stop()
+    assert peak - baseline < 64 * 1024
 
 
 def test_wide_shallow_metadata_logs_and_exports():
@@ -1250,3 +1256,28 @@ def test_half_signed_receipt_with_bad_content_is_a_signature_error(signature, ki
     with pytest.raises(ReceiptSignatureError):
         log.log(receipt)
     assert log.receipts == []
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "set_int_max_str_digits"),
+    reason="interpreter has no integer-digit limit to lift",
+)
+def test_oversized_integer_literal_refuses_without_a_digit_limit():
+    """On Python 3.10.0-3.10.6 there is no digit limit: the literal parses,
+    and the export must still be refused by the schema and signature checks."""
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        log = make_log(make_signer(), count=1)
+        export = log.export_json()
+        big = "1" * 5000
+        hostile = [
+            '{"schema": ' + big + "}",
+            export.replace('"index": 0', '"index": ' + big, 1),
+        ]
+        assert all(text != export for text in hostile)
+        for text in hostile:
+            with pytest.raises(ReceiptSignatureError):
+                log.verify_export_json(text)
+    finally:
+        sys.set_int_max_str_digits(previous)

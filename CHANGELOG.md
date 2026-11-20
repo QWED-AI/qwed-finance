@@ -66,14 +66,20 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   rather than taken from Python's recursion limit, which depends on how
   deep the stack already is, so signing, verification and export cannot
   overflow on content that was accepted.
-- `AuditLog.log` refuses, with or without a signer, metadata that cannot
-  be JSON-encoded (`TypeError`) and an `engine_used` or `status` that is
-  not an enum member (`TypeError`); before, such a receipt was accepted
-  and `export_json()` failed later. A receipt that carries a signature or
-  a key id is refused as `ReceiptSignatureError` instead.
+- `AuditLog.log` refuses, with or without a signer, content that cannot be
+  canonically JSON-encoded: unsupported values, colliding keys and an
+  `engine_used` or `status` that is not an enum member raise `TypeError`;
+  NaN/Infinity raise `ValueError`. Before, such a receipt was accepted and
+  `export_json()` failed later. With a signer configured, a receipt that
+  already carries a signature or a key id raises `ReceiptSignatureError`
+  for the same content instead; an intact signed receipt is verified and
+  re-signed as before.
 - `AuditLog.verify_export_json` refuses nesting past the parser's
-  recursion limit and integer literals past Python's 4300-digit limit as
-  `ReceiptSignatureError`, not as `RecursionError` or `ValueError`.
+  recursion limit as `ReceiptSignatureError`, not `RecursionError`. On
+  Python versions with the integer-digit limit (3.10.7 and later), an
+  integer literal past it is refused as `ReceiptSignatureError`, not
+  `ValueError`; on 3.10.0–3.10.6 such a literal parses, and the export is
+  refused by the schema and signature checks.
 
 ### Fixed
 
