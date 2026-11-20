@@ -60,6 +60,20 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   `ReceiptSignatureError`, not `JSONDecodeError`. Non-string key ids and
   content that cannot be canonically re-encoded also refuse as
   `ReceiptSignatureError` instead of raising `TypeError`.
+- Receipt content is bounded: `metadata`, `proof_steps` and `violations`
+  may nest at most 32 containers deep (`MAX_NESTING_DEPTH`), and deeper
+  content is refused when it is logged (`ValueError`). The bound is fixed
+  rather than taken from Python's recursion limit, which depends on how
+  deep the stack already is, so signing, verification and export cannot
+  overflow on content that was accepted.
+- `AuditLog.log` refuses, with or without a signer, metadata that cannot
+  be JSON-encoded (`TypeError`) and an `engine_used` or `status` that is
+  not an enum member (`TypeError`); before, such a receipt was accepted
+  and `export_json()` failed later. A receipt that carries a signature or
+  a key id is refused as `ReceiptSignatureError` instead.
+- `AuditLog.verify_export_json` refuses nesting past the parser's
+  recursion limit and integer literals past Python's 4300-digit limit as
+  `ReceiptSignatureError`, not as `RecursionError` or `ValueError`.
 
 ### Fixed
 

@@ -29,8 +29,8 @@ from .signing import (
 
 # The fields get_signature signs — everything to_dict() exports. Receipts
 # carry exactly these content fields in an export, plus their signature and
-# signature_key_id. FIELD_MUTATIONS in tests/test_receipt_signature.py pins
-# this list to to_dict().
+# signature_key_id. tests/test_receipt_signing_wiring.py pins this list to
+# to_dict().
 RECEIPT_CONTENT_FIELDS = (
     "receipt_id",
     "timestamp",
