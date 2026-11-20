@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from enum import Enum
-import copy
 import hashlib
 import hmac
 import json
@@ -357,6 +356,31 @@ class ReceiptGenerator:
         )
 
 
+# Deepest container nesting accepted in metadata, proof_steps or violations,
+# counting the field's own container. A fixed bound, not the interpreter's
+# recursion limit: that limit depends on where on the stack a call runs, so
+# a receipt the snapshot accepted could still overflow signing, verification
+# or export, which run deeper. Audit metadata is shallow in practice.
+MAX_NESTING_DEPTH = 32
+
+
+def _nesting_depth(value: Any) -> int:
+    """Deepest list/dict nesting in plain JSON data, counted iteratively."""
+    deepest = 0
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, dict):
+            children = item.values()
+        elif isinstance(item, list):
+            children = item
+        else:
+            continue
+        deepest = max(deepest, depth)
+        stack.extend((child, depth + 1) for child in children)
+    return deepest
+
+
 def _detached_snapshot(receipt: VerificationReceipt) -> VerificationReceipt:
     """Copy a receipt as plain JSON data, without running caller code.
 
@@ -368,10 +392,31 @@ def _detached_snapshot(receipt: VerificationReceipt) -> VerificationReceipt:
     nothing shared with the caller. The canonical encoding — and so the
     signature — is unchanged by the round trip.
 
-    Content that cannot be canonically encoded (unserializable objects,
-    NaN/Infinity, colliding keys) raises here, so it never enters the log.
+    Content that cannot be canonically encoded raises here, so it never
+    enters the log: TypeError for unserializable objects, colliding keys
+    and an ``engine_used`` or ``status`` that is not an enum member;
+    ValueError for NaN/Infinity and for nesting deeper than
+    MAX_NESTING_DEPTH.
     """
-    content = json.loads(json.dumps(receipt.to_dict(), allow_nan=False))
+    if not isinstance(receipt.engine_used, VerificationEngine):
+        raise TypeError(
+            f"engine_used must be a VerificationEngine, not "
+            f"{type(receipt.engine_used).__name__}"
+        )
+    if not isinstance(receipt.status, VerificationStatus):
+        raise TypeError(
+            f"status must be a VerificationStatus, not "
+            f"{type(receipt.status).__name__}"
+        )
+    try:
+        content = json.loads(json.dumps(receipt.to_dict(), allow_nan=False))
+    except RecursionError:
+        raise ValueError(
+            f"receipt content nests deeper than {MAX_NESTING_DEPTH} containers"
+        ) from None
+    for name in ("metadata", "proof_steps", "violations"):
+        if _nesting_depth(content[name]) > MAX_NESTING_DEPTH:
+            raise ValueError(f"{name} nests deeper than {MAX_NESTING_DEPTH} containers")
     content["engine_used"] = VerificationEngine(content["engine_used"])
     content["status"] = VerificationStatus(content["status"])
     return VerificationReceipt(
@@ -430,7 +475,15 @@ class AuditLog:
         object changes concurrently. The new signature is then written
         back to the caller's receipt.
         """
-        snapshot = _detached_snapshot(receipt)
+        try:
+            snapshot = _detached_snapshot(receipt)
+        except (TypeError, ValueError) as error:
+            if self.signer is not None and receipt.signature is not None:
+                raise ReceiptSignatureError(
+                    f"signed receipt {receipt.receipt_id} cannot be re-verified: "
+                    f"{error}"
+                ) from error
+            raise
         if self.signer is not None:
             if (snapshot.signature is None) != (snapshot.signature_key_id is None):
                 raise ReceiptSignatureError(
@@ -482,14 +535,21 @@ class AuditLog:
         is a state a consumer must opt into, never one it mistakes for
         signed.
 
-        Each receipt is snapshotted before it is verified and serialised,
+        Each receipt is snapshotted (the same detached copy log() makes)
+        before it is verified and serialised,
         so the exported content is exactly the content that was verified
         even if another thread mutates the retained receipt mid-export.
         """
         receipts = []
         if self.signer is not None:
             for receipt in self.receipts:
-                snapshot = copy.deepcopy(receipt)
+                try:
+                    snapshot = _detached_snapshot(receipt)
+                except (TypeError, ValueError) as error:
+                    raise ReceiptSignatureError(
+                        f"receipt {receipt.receipt_id} cannot be verified for "
+                        f"export: {error}"
+                    ) from error
                 self.signer.verify_receipt(snapshot)
                 receipts.append(snapshot.to_export_dict())
             document: Dict[str, Any] = {
@@ -502,7 +562,7 @@ class AuditLog:
             self.signer.sign_export_document(document)
         else:
             for receipt in self.receipts:
-                snapshot = copy.deepcopy(receipt).to_export_dict()
+                snapshot = _detached_snapshot(receipt).to_export_dict()
                 snapshot["signature"] = None
                 snapshot["signature_key_id"] = None
                 receipts.append(snapshot)
@@ -537,7 +597,9 @@ class AuditLog:
             )
         try:
             document = json.loads(export, object_pairs_hook=_reject_duplicate_keys)
-        except json.JSONDecodeError as error:
+        except ValueError as error:
+            # JSONDecodeError, and the plain ValueError Python 3.11+ raises
+            # for an integer literal past the digit limit.
             raise ReceiptSignatureError(f"export is not valid JSON: {error}") from error
         except RecursionError:
             raise ReceiptSignatureError(

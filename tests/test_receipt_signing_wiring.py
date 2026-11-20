@@ -1061,3 +1061,126 @@ def test_deeply_nested_parsed_export_refuses_to_verify():
     document["receipts"][0]["metadata"] = {"deep": _deeply_nested(100_000)}
     with pytest.raises(ReceiptSignatureError):
         signer.verify_export_document(document)
+
+
+def test_oversized_integer_literal_refuses_to_verify():
+    """Python's integer-digit limit raises a plain ValueError, which is not a
+    JSONDecodeError; it must still surface as a verification failure."""
+    log = AuditLog(signer=make_signer())
+    hostile = '{"schema": ' + "1" * 5000 + "}"
+    with pytest.raises(ReceiptSignatureError):
+        log.verify_export_json(hostile)
+
+
+def test_relogging_a_signed_receipt_with_a_non_enum_field_refuses():
+    """Re-verifying existing evidence fails as ReceiptSignatureError, like
+    verify_receipt, never as a raw AttributeError."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    signer.sign_receipt(receipt)
+    receipt.engine_used = "Decimal"
+    log = AuditLog(signer=signer)
+    with pytest.raises(ReceiptSignatureError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_logging_fresh_content_with_a_non_enum_field_is_a_type_error():
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.status = "verified"
+    log = AuditLog(signer=make_signer())
+    with pytest.raises(TypeError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def _metadata_at_depth(depth, container):
+    """Metadata whose nesting, counting the metadata dict, is exactly depth."""
+    value = [] if container == "list" else {}
+    for _ in range(depth - 2):
+        value = [value] if container == "list" else {"k": value}
+    return {"deep": value}
+
+
+@pytest.mark.parametrize("container", ["list", "dict"])
+def test_nesting_at_the_bound_logs_and_exports(container):
+    """At exactly MAX_NESTING_DEPTH a receipt is retained, signed, exported
+    and verified: every later step works on bounded data."""
+    from qwed_finance.models.receipt import MAX_NESTING_DEPTH, _nesting_depth
+
+    metadata = _metadata_at_depth(MAX_NESTING_DEPTH, container)
+    assert _nesting_depth(metadata) == MAX_NESTING_DEPTH
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = metadata
+    log.log(receipt)
+    log.verify_export_json(log.export_json())
+
+
+@pytest.mark.parametrize("container", ["list", "dict"])
+def test_nesting_one_past_the_bound_is_refused_at_log(container):
+    from qwed_finance.models.receipt import MAX_NESTING_DEPTH
+
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = _metadata_at_depth(MAX_NESTING_DEPTH + 1, container)
+    with pytest.raises(ValueError, match="nests deeper"):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_nesting_past_the_bound_in_proof_steps_is_refused():
+    from qwed_finance.models.receipt import MAX_NESTING_DEPTH
+
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    # The "deep" value nests MAX_NESTING_DEPTH lists; the proof_steps list
+    # around it makes one more.
+    receipt.proof_steps = [_metadata_at_depth(MAX_NESTING_DEPTH + 1, "list")["deep"]]
+    with pytest.raises(ValueError, match="proof_steps nests deeper"):
+        log.log(receipt)
+
+
+def test_retained_receipt_mutated_past_the_bound_refuses_export():
+    """A retained receipt edited past the bound after logging refuses the
+    signed export as a verification error."""
+    from qwed_finance.models.receipt import MAX_NESTING_DEPTH
+
+    log = make_log(make_signer(), count=1)
+    log.receipts[0].metadata = _metadata_at_depth(MAX_NESTING_DEPTH + 1, "dict")
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()
+
+
+def test_nesting_past_the_limit_is_refused_at_log():
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {"deep": _deeply_nested(100_000)}
+    with pytest.raises(ValueError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_verify_receipt_directly_refuses_a_non_enum_field():
+    """verify_receipt is public: called on a receipt whose enum field became
+    a string, it refuses as ReceiptSignatureError, not AttributeError."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    signer.sign_receipt(receipt)
+    receipt.engine_used = "Decimal"
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_receipt(receipt)
