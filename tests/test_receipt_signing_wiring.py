@@ -1184,3 +1184,69 @@ def test_verify_receipt_directly_refuses_a_non_enum_field():
     receipt.engine_used = "Decimal"
     with pytest.raises(ReceiptSignatureError):
         signer.verify_receipt(receipt)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (42, 0),
+        ("text", 0),
+        ([], 1),
+        ({}, 1),
+        ([1, "a", None, 2.5], 1),
+        ({"a": [1, {"b": []}], "c": 3}, 4),
+        ([[], [[[]]], []], 4),
+    ],
+)
+def test_nesting_depth_counts_containers_only(value, expected):
+    from qwed_finance.models.receipt import _nesting_depth
+
+    assert _nesting_depth(value) == expected
+
+
+def test_nesting_depth_memory_does_not_grow_with_width():
+    """One iterator per open container: a list of a million scalars costs
+    one iterator, not one stack entry per element."""
+    import tracemalloc
+
+    from qwed_finance.models.receipt import _nesting_depth
+
+    wide = [{"tags": list(range(1_000_000))}]
+    tracemalloc.start()
+    try:
+        assert _nesting_depth(wide) == 3
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 64 * 1024
+
+
+def test_wide_shallow_metadata_logs_and_exports():
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {"tags": [f"t{i}" for i in range(50_000)]}
+    log.log(receipt)
+    log.verify_export_json(log.export_json())
+
+
+@pytest.mark.parametrize(
+    "signature, kid",
+    [("ab" * 32, None), (None, "hmac-sha256:0000000000000000")],
+    ids=["signature-only", "key-id-only"],
+)
+def test_half_signed_receipt_with_bad_content_is_a_signature_error(signature, kid):
+    """Any signature state puts a receipt on the evidence path: even with
+    content that cannot be encoded, a half-signed receipt refuses as
+    ReceiptSignatureError, never as a raw TypeError."""
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.signature = signature
+    receipt.signature_key_id = kid
+    receipt.engine_used = "Decimal"
+    log = AuditLog(signer=make_signer())
+    with pytest.raises(ReceiptSignatureError):
+        log.log(receipt)
+    assert log.receipts == []

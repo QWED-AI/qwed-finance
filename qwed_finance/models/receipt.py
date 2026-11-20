@@ -364,20 +364,37 @@ class ReceiptGenerator:
 MAX_NESTING_DEPTH = 32
 
 
+def _children(item: Any) -> Optional[Any]:
+    """An iterator over a list's items or a dict's values; None for scalars."""
+    if isinstance(item, dict):
+        return iter(item.values())
+    if isinstance(item, list):
+        return iter(item)
+    return None
+
+
 def _nesting_depth(value: Any) -> int:
-    """Deepest list/dict nesting in plain JSON data, counted iteratively."""
-    deepest = 0
-    stack = [(value, 1)]
+    """Deepest list/dict nesting in plain JSON data, counted iteratively.
+
+    Walks with a stack holding one iterator per open container, so memory
+    grows with the nesting depth, not with the width of a list or dict: a
+    list of millions of scalar tags costs one iterator, not one entry each.
+    """
+    root = _children(value)
+    if root is None:
+        return 0
+    end = object()
+    deepest = 1
+    stack = [root]
     while stack:
-        item, depth = stack.pop()
-        if isinstance(item, dict):
-            children = item.values()
-        elif isinstance(item, list):
-            children = item
-        else:
+        child = next(stack[-1], end)
+        if child is end:
+            stack.pop()
             continue
-        deepest = max(deepest, depth)
-        stack.extend((child, depth + 1) for child in children)
+        nested = _children(child)
+        if nested is not None:
+            stack.append(nested)
+            deepest = max(deepest, len(stack))
     return deepest
 
 
@@ -478,7 +495,10 @@ class AuditLog:
         try:
             snapshot = _detached_snapshot(receipt)
         except (TypeError, ValueError) as error:
-            if self.signer is not None and receipt.signature is not None:
+            carries_signature_state = (
+                receipt.signature is not None or receipt.signature_key_id is not None
+            )
+            if self.signer is not None and carries_signature_state:
                 raise ReceiptSignatureError(
                     f"signed receipt {receipt.receipt_id} cannot be re-verified: "
                     f"{error}"
