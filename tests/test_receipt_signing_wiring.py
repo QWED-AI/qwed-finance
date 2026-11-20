@@ -1,0 +1,703 @@
+"""Receipt signing wired into the audit trail (#90).
+
+The #44 primitive (get_signature) existed; nothing called it. These tests
+pin the wiring: keys resolve from the environment and fail closed when
+malformed, receipts are signed at retention, exports carry the signatures
+plus an envelope signature over the whole document, and every tampered
+variant of a signed export — mutated field, removed field, injected field,
+truncated, reordered, spliced, cross-protocol signature — refuses to
+verify.
+
+Key ids support rotation: retired keys stay in the verification window
+while evidence signed under them must still verify, and close afterwards.
+"""
+
+import json
+
+import pytest
+
+from qwed_finance import (
+    AuditLog,
+    ReceiptGenerator,
+    ReceiptSignatureError,
+    ReceiptSigner,
+    SigningKeyError,
+    VerificationEngine,
+    parse_key_material,
+)
+from qwed_finance.models.receipt import RECEIPT_CONTENT_FIELDS
+
+KEY_A = bytes(range(32))
+KEY_B = bytes(range(32, 64))
+KEY_A_HEX = KEY_A.hex()
+KEY_B_HEX = KEY_B.hex()
+
+SIGNING_ENV = "QWED_RECEIPT_SIGNING_KEY"
+VERIFICATION_ENV = "QWED_RECEIPT_VERIFICATION_KEYS"
+
+
+def make_signer(key: bytes = KEY_A, verification_keys=None) -> ReceiptSigner:
+    return ReceiptSigner(key, verification_keys)
+
+
+def make_log(signer=None, count: int = 2) -> AuditLog:
+    log = AuditLog(signer=signer)
+    for index in range(count):
+        log.log(
+            ReceiptGenerator.create_receipt(
+                guard_name=f"TestGuard.verify_{index}",
+                engine=VerificationEngine.DECIMAL,
+                llm_output=f"100.0{index}",
+                verified=index % 2 == 0,
+                computed_value=f"100.0{index}",
+                violations=[] if index % 2 == 0 else ["mismatch"],
+                metadata={"rule": f"r-{index}", "index": index},
+            )
+        )
+    return log
+
+
+def signed_export(key: bytes = KEY_A, count: int = 2) -> str:
+    return make_log(make_signer(key), count).export_json()
+
+
+@pytest.fixture(autouse=True)
+def clean_signing_env(monkeypatch):
+    """No ambient signing configuration leaks into any test."""
+    monkeypatch.delenv(SIGNING_ENV, raising=False)
+    monkeypatch.delenv(VERIFICATION_ENV, raising=False)
+
+
+# -- key material ---------------------------------------------------------
+
+
+def test_parse_key_material_accepts_32_byte_hex():
+    assert parse_key_material(KEY_A_HEX, source="test") == KEY_A
+
+
+def test_parse_key_material_strips_surrounding_whitespace():
+    assert parse_key_material(f"  {KEY_A_HEX}\n", source="test") == KEY_A
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\n\t"])
+def test_parse_key_material_rejects_empty(bad):
+    with pytest.raises(SigningKeyError):
+        parse_key_material(bad, source="test")
+
+
+def test_parse_key_material_rejects_non_hex():
+    with pytest.raises(SigningKeyError):
+        parse_key_material("not hex at all!", source="test")
+
+
+def test_parse_key_material_rejects_odd_length_hex():
+    with pytest.raises(SigningKeyError):
+        parse_key_material(KEY_A_HEX + "a", source="test")
+
+
+def test_parse_key_material_rejects_short_key():
+    with pytest.raises(SigningKeyError):
+        parse_key_material(b"x" * 31 * 2, source="test")
+
+
+def test_parse_key_material_rejects_non_string():
+    with pytest.raises(SigningKeyError):
+        parse_key_material(KEY_A, source="test")  # raw bytes, not hex text
+
+
+def test_signer_rejects_passphrase_string_as_key():
+    """A passphrase pasted where key bytes belong must not become a key."""
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner("correct-horse-battery-staple")
+
+
+def test_signer_rejects_short_key_bytes():
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner(b"x" * 31)
+
+
+def test_signer_rejects_string_verification_key():
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner(KEY_A, verification_keys=[KEY_B.hex()])
+
+
+def test_signer_rejects_short_verification_key():
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner(KEY_A, verification_keys=[b"x" * 31])
+
+
+def test_signer_dedupes_repeated_verification_keys():
+    signer = ReceiptSigner(KEY_A, verification_keys=[KEY_B, KEY_B])
+    assert len(signer._verification_keys) == 2
+
+
+def test_key_ids_are_derived_and_distinct():
+    assert make_signer(KEY_A).signing_kid == make_signer(KEY_A).signing_kid
+    assert make_signer(KEY_A).signing_kid != make_signer(KEY_B).signing_kid
+
+
+def test_repr_does_not_leak_key_material():
+    representation = repr(make_signer())
+    assert KEY_A_HEX not in representation
+    assert str(KEY_A) not in representation
+    assert "signing_kid" in representation
+
+
+# -- environment ----------------------------------------------------------
+
+
+def test_from_env_none_when_unset():
+    assert ReceiptSigner.from_env() is None
+
+
+def test_from_env_reads_signing_key(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, KEY_A_HEX)
+    signer = ReceiptSigner.from_env()
+    assert signer is not None
+    assert signer.signing_kid == make_signer(KEY_A).signing_kid
+
+
+def test_from_env_strips_whitespace(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, f"  {KEY_A_HEX} \n")
+    assert ReceiptSigner.from_env().signing_kid == make_signer(KEY_A).signing_kid
+
+
+def test_from_env_rejects_malformed_key(monkeypatch):
+    """A deployment that believes it is signing must fail loudly, not sign nothing."""
+    monkeypatch.setenv(SIGNING_ENV, "zzz")
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner.from_env()
+
+
+def test_from_env_rejects_empty_value(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, "")
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner.from_env()
+
+
+def test_from_env_rejects_short_value(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, "61" * 31)
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner.from_env()
+
+
+def test_from_env_rejects_verification_keys_without_signing_key(monkeypatch):
+    monkeypatch.setenv(VERIFICATION_ENV, KEY_A_HEX)
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner.from_env()
+
+
+@pytest.mark.parametrize(
+    "value", [",", f"{KEY_A_HEX},", f"{KEY_A_HEX},,{KEY_B_HEX}", f"  ,{KEY_A_HEX}"]
+)
+def test_from_env_rejects_empty_verification_entries(monkeypatch, value):
+    monkeypatch.setenv(SIGNING_ENV, KEY_B_HEX)
+    monkeypatch.setenv(VERIFICATION_ENV, value)
+    with pytest.raises(SigningKeyError):
+        ReceiptSigner.from_env()
+
+
+def test_from_env_accepts_rotation_window(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, KEY_B_HEX)
+    monkeypatch.setenv(VERIFICATION_ENV, f"{KEY_A_HEX},{KEY_B_HEX}")
+    signer = ReceiptSigner.from_env()
+    old_export = json.loads(signed_export(KEY_A))
+    signer.verify_export_document(old_export)
+    fresh = ReceiptSigner(KEY_B)
+    with pytest.raises(ReceiptSignatureError):
+        fresh.verify_export_document(old_export)
+
+
+def test_audit_log_resolves_signer_from_env(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, KEY_A_HEX)
+    log = AuditLog()
+    log.log(
+        ReceiptGenerator.create_receipt(
+            "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+        )
+    )
+    assert log.receipts[0].signature is not None
+
+
+def test_audit_log_env_is_read_at_construction_not_cached(monkeypatch):
+    first = AuditLog()
+    assert first.signer is None
+    monkeypatch.setenv(SIGNING_ENV, KEY_A_HEX)
+    second = AuditLog()
+    assert second.signer is not None
+
+
+def test_bad_env_breaks_audit_log_construction_loudly(monkeypatch):
+    monkeypatch.setenv(SIGNING_ENV, "not-hex")
+    with pytest.raises(SigningKeyError):
+        AuditLog()
+
+
+# -- signing at retention ----------------------------------------------------
+
+
+def test_log_signs_receipt_with_active_key():
+    log = make_log(make_signer())
+    for receipt in log.receipts:
+        assert receipt.signature is not None
+        assert receipt.signature_key_id == log.signer.signing_kid
+
+
+def test_log_uses_the_issue_44_primitive():
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    AuditLog(signer=signer).log(receipt)
+    assert receipt.signature == receipt.get_signature(KEY_A)
+
+
+def test_log_without_signer_leaves_receipt_unsigned():
+    log = make_log()
+    for receipt in log.receipts:
+        assert receipt.signature is None
+        assert receipt.signature_key_id is None
+
+
+def test_log_fails_closed_on_unserializable_metadata():
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {"obj": object()}
+    with pytest.raises(TypeError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_log_fails_closed_on_nan_metadata():
+    log = AuditLog(signer=make_signer())
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {"score": float("nan")}
+    with pytest.raises(ValueError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_to_dict_excludes_signature_fields():
+    """The signed payload is exactly the content — a signature cannot sign itself."""
+    log = make_log(make_signer(), count=1)
+    exported = log.receipts[0].to_dict()
+    assert "signature" not in exported
+    assert "signature_key_id" not in exported
+    assert set(RECEIPT_CONTENT_FIELDS) == set(exported)
+
+
+def test_to_export_dict_includes_signature_fields():
+    log = make_log(make_signer(), count=1)
+    exported = log.receipts[0].to_export_dict()
+    assert exported["signature"] == log.receipts[0].signature
+    assert exported["signature_key_id"] == log.receipts[0].signature_key_id
+
+
+# -- export envelope ---------------------------------------------------------
+
+
+def test_signed_export_shape():
+    signer = make_signer()
+    document = json.loads(make_log(signer).export_json())
+    assert document["schema"] == "qwed-finance/audit-log/v1"
+    assert document["alg"] == "HMAC-SHA256"
+    assert document["signature_key_id"] == signer.signing_kid
+    assert isinstance(document["signature"], str)
+    for receipt in document["receipts"]:
+        assert receipt["signature"] is not None
+        assert receipt["signature_key_id"] == signer.signing_kid
+
+
+def test_signed_export_round_trip_verifies():
+    export = signed_export()
+    AuditLog(signer=make_signer()).verify_export_json(export)
+
+
+def test_export_is_an_object_not_a_bare_list():
+    """The export is an envelope — a bare list could not carry a signature."""
+    assert isinstance(json.loads(signed_export()), dict)
+
+
+def test_empty_log_signed_export_verifies():
+    log = AuditLog(signer=make_signer())
+    log.verify_export_json(log.export_json())
+
+
+def test_unsigned_export_is_explicit():
+    document = json.loads(make_log().export_json())
+    assert document["schema"] == "qwed-finance/audit-log/v1"
+    assert document["alg"] is None
+    assert document["signature"] is None
+    assert document["signature_key_id"] is None
+    for receipt in document["receipts"]:
+        assert receipt["signature"] is None
+        assert receipt["signature_key_id"] is None
+
+
+def test_verify_export_requires_signer():
+    with pytest.raises(ReceiptSignatureError):
+        AuditLog().verify_export_json(signed_export())
+
+
+def test_verify_export_rejects_unsigned_export():
+    export = make_log().export_json()
+    with pytest.raises(ReceiptSignatureError, match="unsigned"):
+        AuditLog(signer=make_signer()).verify_export_json(export)
+
+
+def test_export_fails_closed_on_in_place_tampering_after_log():
+    log = make_log(make_signer())
+    log.receipts[0].computed_value = "1.00"
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()
+
+
+def test_export_fails_closed_on_unsigned_appended_receipt():
+    log = make_log(make_signer(), count=1)
+    log.receipts.append(
+        ReceiptGenerator.create_receipt(
+            "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+        )
+    )
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()
+
+
+def test_export_fails_closed_on_foreign_signed_receipt():
+    log = make_log(make_signer(KEY_A), count=1)
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    make_signer(KEY_B).sign_receipt(receipt)
+    log.receipts[0] = receipt
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()
+
+
+# -- tampering: envelope fields ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda doc: doc.update(schema="qwed-finance/audit-log/v2"),
+        lambda doc: doc.update(schema="QWED-FINANCE/AUDIT-LOG/V1"),
+        # Cyrillic look-alike for the "o" in "log".
+        lambda doc: doc.update(schema="qwed-finance/audit-lоg/v1"),
+        lambda doc: doc.pop("schema"),
+        lambda doc: doc.update(alg="hmac-sha256"),
+        lambda doc: doc.update(alg="HS256"),
+        lambda doc: doc.pop("alg"),
+        lambda doc: doc.update(signature_key_id="hmac-sha256:deadbeefdeadbeef"),
+        lambda doc: doc.update(signature_key_id=doc["signature_key_id"].upper()),
+        lambda doc: doc.pop("signature_key_id"),
+        lambda doc: doc.update(signature=None),
+        lambda doc: doc.pop("signature"),
+        lambda doc: doc.update(signature="0" * 64),
+        lambda doc: doc.update(signature=doc["signature"][:-1]),
+        lambda doc: doc.update(signature=doc["signature"] + "0"),
+        lambda doc: doc.update(signature=" " + doc["signature"]),
+        lambda doc: doc.update(signature=12345),
+        lambda doc: doc.update(extra="injected"),
+        lambda doc: doc.pop("receipts"),
+        lambda doc: doc.update(receipts={"not": "a list"}),
+        lambda doc: doc.update(receipts="not-a-list"),
+    ],
+    ids=[
+        "schema-bumped",
+        "schema-case",
+        "schema-unicode-lookalike",
+        "schema-missing",
+        "alg-case",
+        "alg-swapped",
+        "alg-missing",
+        "kid-unknown",
+        "kid-case",
+        "kid-missing",
+        "signature-null",
+        "signature-missing",
+        "signature-zeroed",
+        "signature-truncated",
+        "signature-extended",
+        "signature-leading-space",
+        "signature-not-a-string",
+        "extra-field-injected",
+        "receipts-missing",
+        "receipts-dict",
+        "receipts-string",
+    ],
+)
+def test_tampered_envelope_field_refuses_to_verify(mutation):
+    signer = make_signer()
+    document = json.loads(signed_export())
+    mutation(document)
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+# -- tampering: receipt content ----------------------------------------------
+
+
+CONTENT_MUTATIONS = {
+    "receipt_id": lambda r: r.update(receipt_id="22222222-2222-2222-2222-222222222222"),
+    "timestamp": lambda r: r.update(timestamp="2026-11-20T00:00:01+00:00"),
+    "input_hash": lambda r: r.update(input_hash="b" * 64),
+    "input_preview": lambda r: r.update(input_preview="forged preview"),
+    "guard_name": lambda r: r.update(guard_name="OtherGuard.method"),
+    "engine_used": lambda r: r.update(engine_used="Z3"),
+    "status": lambda r: r.update(status="rejected"),
+    "verified": lambda r: r.update(verified=not r["verified"]),
+    "computed_value": lambda r: r.update(computed_value="1.00"),
+    "llm_value": lambda r: r.update(llm_value="1.00"),
+    "difference": lambda r: r.update(difference="99.00"),
+    "proof_steps": lambda r: r.update(proof_steps=["forged-step"]),
+    "formula_used": lambda r: r.update(formula_used="b=c"),
+    "violations": lambda r: r.update(violations=["forged-violation"]),
+    "metadata": lambda r: r.update(metadata={"rule": "forged"}),
+}
+
+
+def test_content_mutations_cover_every_receipt_field():
+    assert set(CONTENT_MUTATIONS) == set(RECEIPT_CONTENT_FIELDS)
+
+
+@pytest.mark.parametrize("field", sorted(CONTENT_MUTATIONS))
+def test_tampered_receipt_content_refuses_to_verify(field):
+    signer = make_signer()
+    document = json.loads(signed_export())
+    CONTENT_MUTATIONS[field](document["receipts"][0])
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda r: r.update(signature="ВАЛИДНЫЙ"),
+        lambda r: r.update(signature="\ud800" + r["signature"]),
+        lambda r: r.pop("computed_value"),
+        lambda r: r.pop("signature"),
+        lambda r: r.pop("signature_key_id"),
+        lambda r: r.update(signature=None),
+        lambda r: r.update(signature_key_id=None),
+        lambda r: r.update(signature=12345),
+        lambda r: r.update(extra="injected"),
+        lambda r: r.update(receipt_id=None),
+    ],
+    ids=[
+        "signature-non-ascii",
+        "signature-lone-surrogate",
+        "field-removed",
+        "signature-removed",
+        "kid-removed",
+        "signature-null",
+        "kid-null",
+        "signature-not-string",
+        "field-injected",
+        "receipt-id-null",
+    ],
+)
+def test_malformed_receipt_shape_refuses_to_verify(mutation):
+    signer = make_signer()
+    document = json.loads(signed_export())
+    mutation(document["receipts"][0])
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_receipt_not_a_dict_refuses_to_verify():
+    document = json.loads(signed_export())
+    document["receipts"][0] = ["not", "a", "dict"]
+    with pytest.raises(ReceiptSignatureError):
+        make_signer().verify_export_document(document)
+
+
+def test_swapped_receipt_signatures_refuse_to_verify():
+    """Two genuine signatures, exchanged between receipts, must not verify."""
+    signer = make_signer()
+    document = json.loads(signed_export(count=2))
+    first, second = document["receipts"]
+    first["signature"], second["signature"] = second["signature"], first["signature"]
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_export_document_not_a_dict_refuses():
+    for hostile in ([], "string", 42, None, True):
+        with pytest.raises(ReceiptSignatureError):
+            make_signer().verify_export_document(hostile)
+
+
+def test_nan_injected_into_parsed_export_refuses_to_verify():
+    """json.loads accepts the NaN token; verification must not."""
+    signer = make_signer()
+    document = json.loads(signed_export())
+    document["receipts"][0]["metadata"] = {"score": float("nan")}
+    text = json.dumps(document, indent=2)  # allow_nan default emits the NaN token
+    parsed = json.loads(text)
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(parsed)
+
+
+# -- tampering: the export as a whole ----------------------------------------
+
+
+def test_truncated_export_refuses_to_verify():
+    signer = make_signer()
+    document = json.loads(signed_export(count=3))
+    del document["receipts"][1:]
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_reordered_receipts_refuse_to_verify():
+    signer = make_signer()
+    document = json.loads(signed_export(count=3))
+    document["receipts"].reverse()
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_duplicated_receipt_refuses_to_verify():
+    signer = make_signer()
+    document = json.loads(signed_export(count=1))
+    document["receipts"].append(document["receipts"][0])
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_spliced_genuine_receipt_refuses_to_verify():
+    """A genuine, correctly-signed receipt from another export must not splice in.
+
+    Per-receipt verification alone cannot catch this — the receipt really
+    was signed by this key. The envelope signature covers the receipts as
+    a set, so the splice fails.
+    """
+    signer = make_signer()
+    export_a = json.loads(make_log(signer, count=1).export_json())
+    export_b = json.loads(make_log(signer, count=1).export_json())
+
+    spliced = export_b["receipts"][0]
+    # It is genuine on its own:
+    signer.verify_receipt_payload(spliced)
+    # But it does not belong to export A:
+    export_a["receipts"].append(spliced)
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(export_a)
+
+
+def test_cross_protocol_signature_refuses_to_verify():
+    """An envelope signature cannot be replayed as a receipt signature."""
+    signer = make_signer()
+    document = json.loads(signed_export())
+    document["receipts"][0]["signature"] = document["signature"]
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+def test_unicode_metadata_round_trips_and_tampers():
+    """Look-alike and zero-width characters sign, round-trip and detect edits."""
+    signer = make_signer()
+    log = AuditLog(signer=signer)
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {
+        "name": "ВАСИЛИЙ",  # Cyrillic look-alikes
+        "zwsp": "a\u200bb",  # zero-width space inside a value
+        "bank": "🏦",
+    }
+    log.log(receipt)
+    export = log.export_json()
+    log.verify_export_json(export)
+
+    document = json.loads(export)
+    document["receipts"][0]["metadata"]["zwsp"] = "a b"  # strip the zero-width
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_export_document(document)
+
+
+# -- rotation ------------------------------------------------------------------
+
+
+def test_old_key_evidence_verifies_during_rotation_window():
+    old_export = signed_export(KEY_A)
+    rotated = make_signer(KEY_B, verification_keys=[KEY_A])
+    rotated.verify_export_document(json.loads(old_export))
+
+
+def test_old_key_evidence_refuses_after_window_closes():
+    old_export = json.loads(signed_export(KEY_A))
+    with pytest.raises(ReceiptSignatureError):
+        make_signer(KEY_B).verify_export_document(old_export)
+
+
+def test_new_receipts_are_signed_with_the_new_key():
+    rotated = make_signer(KEY_B, verification_keys=[KEY_A])
+    log = make_log(rotated, count=1)
+    assert log.receipts[0].signature_key_id == rotated.signing_kid
+    log.verify_export_json(log.export_json())
+
+
+def test_relogging_resigns_with_the_active_key():
+    old_log = make_log(make_signer(KEY_A), count=1)
+    receipt = old_log.receipts[0]
+    rotated = make_signer(KEY_B, verification_keys=[KEY_A])
+    new_log = AuditLog(signer=rotated)
+    new_log.log(receipt)
+    assert receipt.signature_key_id == rotated.signing_kid
+    new_log.verify_export_json(new_log.export_json())
+
+
+# -- golden values ----------------------------------------------------------------
+
+
+def test_known_answer_envelope_mac():
+    """Pins the envelope MAC: domain tag, canonical JSON, HMAC-SHA256."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        guard_name="GoldenGuard.verify",
+        engine=VerificationEngine.DECIMAL,
+        llm_output="42.00",
+        verified=True,
+        computed_value="42.00",
+    )
+    receipt.receipt_id = "11111111-1111-1111-1111-111111111111"
+    receipt.timestamp = "2026-11-20T00:00:00+00:00"
+    log = AuditLog(signer=signer)
+    log.log(receipt)
+    document = json.loads(log.export_json())
+    assert (
+        document["signature"]
+        == "3f6142af825da4190da125cf44762f484642b9300360833e15e29f87508dd5b7"
+    )
+
+
+# -- integrations pick up signing through the environment ------------------------
+
+
+def test_ucp_integration_signs_receipts_when_env_set(monkeypatch):
+    from qwed_finance import UCPIntegration
+
+    monkeypatch.setenv(SIGNING_ENV, KEY_A_HEX)
+    integration = UCPIntegration()
+    result = integration.verify_payment_token(
+        {
+            "amount": 100.0,
+            "currency": "USD",
+            "customer_id": "cust-1",
+            "customer_country": "US",
+            "kyc_verified": True,
+            "payment_method": "card",
+        }
+    )
+    assert integration.audit_log.receipts
+    for receipt in integration.audit_log.receipts:
+        assert receipt.signature is not None
+        assert receipt.signature_key_id == integration.audit_log.signer.signing_kid
+    integration.audit_log.verify_export_json(integration.audit_log.export_json())
+    assert result is not None

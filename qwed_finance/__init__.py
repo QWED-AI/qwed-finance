@@ -39,6 +39,12 @@ from .models.receipt import (
     ReceiptGenerator,
     AuditLog
 )
+from .models.signing import (
+    ReceiptSigner,
+    ReceiptSignatureError,
+    SigningKeyError,
+    parse_key_material,
+)
 from .integrations import (
     OpenResponsesIntegration,
     VerifiedToolCall,
@@ -119,6 +125,10 @@ __all__ = [
     "VerificationStatus",
     "ReceiptGenerator",
     "AuditLog",
+    "ReceiptSigner",
+    "ReceiptSignatureError",
+    "SigningKeyError",
+    "parse_key_material",
     
     # Open Responses Integration
     "OpenResponsesIntegration",

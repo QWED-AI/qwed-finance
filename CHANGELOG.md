@@ -8,6 +8,42 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+### Added
+
+- **Receipts are signed when they enter the audit trail, and exports
+  carry the signatures (#90, follow-up to #44).** `AuditLog` now holds a
+  `ReceiptSigner`, resolved from `QWED_RECEIPT_SIGNING_KEY` (hex, at
+  least 32 bytes decoded) by default: `AuditLog.log` signs every receipt
+  with the #44 HMAC primitive as it is retained, and the guard and
+  integration flows (`CrossGuard`, `UCPIntegration`,
+  `OpenResponsesIntegration`) pick this up with no code change. A signer
+  is fail-closed about its configuration: a malformed, empty or
+  too-short key raises at construction — never silently signs nothing.
+- `QWED_RECEIPT_VERIFICATION_KEYS` names retired keys still accepted for
+  verification, the rotation window: evidence signed under an old key
+  keeps verifying until the key is removed, and refuses afterwards.
+  Key ids are derived from the key material, so a key id cannot lie about
+  which key signed. Empty list entries raise rather than being skipped.
+- `AuditLog.verify_export_json` verifies an exported envelope and fails
+  closed on every deviation: unsigned export, unknown key id, tampered
+  receipt or envelope, injected or missing fields, truncated or reordered
+  receipts, a signature replayed across artifacts.
+
+### Changed
+
+- **`AuditLog.export_json` returns a signed envelope object, not a bare
+  array (breaking).** The export is now
+  `{"schema": "qwed-finance/audit-log/v1", "alg": "HMAC-SHA256",
+  "signature_key_id", "signature", "receipts": [...]}`; each receipt
+  carries its own `signature` and `signature_key_id`, and the envelope
+  signature covers everything else in the document, so truncation and
+  reordering of an export are detectable, which per-receipt signatures
+  alone cannot do. Without a signer configured the envelope is explicitly
+  unsigned (`alg` and signatures `null`). With one configured, the
+  export verifies every receipt first and refuses to ship evidence it
+  cannot vouch for. The envelope stays HMAC — tamper evidence for key
+  holders, not third-party attestation; that envelope is #37.
+
 ### Fixed
 
 - `price_option` rejects anything other than exactly `call` or `put`,

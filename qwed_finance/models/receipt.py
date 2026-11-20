@@ -2,10 +2,12 @@
 Verification Receipt - tamper-evident evidence records for audit trails.
 
 Integrity is checked with VerificationReceipt.get_signature: HMAC-SHA256
-over the full canonical receipt, keyed by the verifier instance. This is
-tamper evidence for holders of the signing key only — it carries no issuer
-identity and is not third-party-verifiable attestation; the regulator-facing
-attestation format is tracked in #37.
+over the full canonical receipt, keyed by the verifier instance. A
+ReceiptSigner wires that primitive into the runtime flow (#90): receipts
+are signed as they enter an AuditLog, and exports carry the signatures.
+This is tamper evidence for holders of the signing key only — it carries
+no issuer identity and is not third-party-verifiable attestation; the
+regulator-facing attestation format is tracked in #37.
 """
 
 from dataclasses import dataclass, field
@@ -18,19 +20,50 @@ import json
 import math
 import uuid
 
+from .signing import (
+    EXPORT_ALG,
+    EXPORT_SCHEMA,
+    ReceiptSignatureError,
+    ReceiptSigner,
+)
+
+# The fields get_signature signs — everything to_dict() exports. Receipts
+# carry exactly these content fields in an export, plus their signature and
+# signature_key_id. FIELD_MUTATIONS in tests/test_receipt_signature.py pins
+# this list to to_dict().
+RECEIPT_CONTENT_FIELDS = (
+    "receipt_id",
+    "timestamp",
+    "input_hash",
+    "input_preview",
+    "guard_name",
+    "engine_used",
+    "status",
+    "verified",
+    "computed_value",
+    "llm_value",
+    "difference",
+    "proof_steps",
+    "formula_used",
+    "violations",
+    "metadata",
+)
+
 
 class VerificationEngine(Enum):
     """QWED verification engines used"""
-    SYMPY = "SymPy"          # Symbolic math
-    Z3 = "Z3"                # SMT solver
-    SQLGLOT = "SQLGlot"      # SQL AST
-    XML_SCHEMA = "XMLSchema" # XML validation
-    DECIMAL = "Decimal"      # Exact arithmetic
-    REGEX = "Regex"          # Pattern matching
+
+    SYMPY = "SymPy"  # Symbolic math
+    Z3 = "Z3"  # SMT solver
+    SQLGLOT = "SQLGlot"  # SQL AST
+    XML_SCHEMA = "XMLSchema"  # XML validation
+    DECIMAL = "Decimal"  # Exact arithmetic
+    REGEX = "Regex"  # Pattern matching
 
 
 class VerificationStatus(Enum):
     """Verification outcome"""
+
     VERIFIED = "verified"
     REJECTED = "rejected"
     INSUFFICIENT_DATA = "insufficient_data"
@@ -105,38 +138,48 @@ class VerificationReceipt:
     get_signature proves integrity to holders of the signing key; it does
     not establish issuer identity or third-party verifiability (see #37).
     """
-    
+
     # Unique identifiers
     receipt_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    
+
     # Timestamps
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
     # Input hashing
-    input_hash: str = ""          # SHA-256 of LLM output
-    input_preview: str = ""       # First 100 chars for human readability
-    
+    input_hash: str = ""  # SHA-256 of LLM output
+    input_preview: str = ""  # First 100 chars for human readability
+
     # Verification details
-    guard_name: str = ""          # Which guard performed verification
+    guard_name: str = ""  # Which guard performed verification
     engine_used: VerificationEngine = VerificationEngine.DECIMAL
     status: VerificationStatus = VerificationStatus.VERIFIED
-    
+
     # Results
     verified: bool = True
     computed_value: Optional[str] = None
     llm_value: Optional[str] = None
     difference: Optional[str] = None
-    
+
     # Proof chain
     proof_steps: List[str] = field(default_factory=list)
     formula_used: Optional[str] = None
-    
+
     # Rule violations (if any)
     violations: List[str] = field(default_factory=list)
-    
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Signature over the content fields above (ReceiptSigner, #90). These
+    # are deliberately outside to_dict(): get_signature signs the content,
+    # and a signature cannot sign itself. They travel with the receipt only
+    # in exports (to_export_dict), where verification strips them before
+    # recomputing.
+    signature: Optional[str] = None
+    signature_key_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert receipt to dictionary for JSON serialization.
 
@@ -163,13 +206,26 @@ class VerificationReceipt:
             "proof_steps": self.proof_steps,
             "formula_used": self.formula_used,
             "violations": self.violations,
-            "metadata": metadata
+            "metadata": metadata,
         }
-    
+
     def to_json(self, indent: int = 2) -> str:
         """Serialize receipt to JSON"""
         return json.dumps(self.to_dict(), indent=indent)
-    
+
+    def to_export_dict(self) -> Dict[str, Any]:
+        """Content fields plus the signature fields, for audit exports.
+
+        The inverse of signature verification: consumers verify by
+        stripping ``signature`` and ``signature_key_id``, recomputing
+        get_signature over what remains, and comparing. An unsigned
+        receipt exports with both fields null — explicit, never implicit.
+        """
+        exported = self.to_dict()
+        exported["signature"] = self.signature
+        exported["signature_key_id"] = self.signature_key_id
+        return exported
+
     def get_signature(self, key: bytes) -> str:
         """
         HMAC-SHA256 signature over the full canonical receipt.
@@ -208,7 +264,7 @@ class ReceiptGenerator:
     Factory for generating verification receipts.
     Ensures consistent hashing and timestamping across all guards.
     """
-    
+
     @staticmethod
     def hash_input(input_data: Any) -> str:
         """Generate SHA-256 hash of input data.
@@ -226,10 +282,8 @@ class ReceiptGenerator:
             content = json.dumps(input_data, sort_keys=True)
         else:
             content = str(input_data)
-        return hashlib.sha256(
-            content.encode("utf-8", "surrogatepass")
-        ).hexdigest()
-    
+        return hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()
+
     @staticmethod
     def create_receipt(
         guard_name: str,
@@ -240,11 +294,11 @@ class ReceiptGenerator:
         formula: Optional[str] = None,
         proof_steps: Optional[List[str]] = None,
         violations: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> VerificationReceipt:
         """
         Create a verification receipt with automatic hashing and timestamping.
-        
+
         Args:
             guard_name: Name of the guard (e.g., "ComplianceGuard.verify_aml_flag")
             engine: Which QWED engine performed the verification
@@ -255,25 +309,29 @@ class ReceiptGenerator:
             proof_steps: Step-by-step proof derivation
             violations: List of rule violations (if any)
             metadata: Additional context
-            
+
         Returns:
             VerificationReceipt ready for audit logging
         """
         input_str = str(llm_output)
-        
+
         return VerificationReceipt(
             input_hash=ReceiptGenerator.hash_input(llm_output),
-            input_preview=input_str[:100] + "..." if len(input_str) > 100 else input_str,
+            input_preview=(
+                input_str[:100] + "..." if len(input_str) > 100 else input_str
+            ),
             guard_name=guard_name,
             engine_used=engine,
-            status=VerificationStatus.VERIFIED if verified else VerificationStatus.REJECTED,
+            status=(
+                VerificationStatus.VERIFIED if verified else VerificationStatus.REJECTED
+            ),
             verified=verified,
             computed_value=computed_value,
             llm_value=input_str if len(input_str) <= 50 else None,
             formula_used=formula,
             proof_steps=proof_steps or [],
             violations=violations or [],
-            metadata=metadata or {}
+            metadata=metadata or {},
         )
 
 
@@ -281,49 +339,123 @@ class AuditLog:
     """
     In-memory audit log for verification receipts.
     In production, this would connect to a database or SIEM.
+
+    With a signer configured (constructor argument, or
+    QWED_RECEIPT_SIGNING_KEY in the environment), every receipt is signed
+    as it enters the log and exports carry the signatures plus an
+    envelope signature over the whole export (#90). Without one, exports
+    are explicitly unsigned. A configured signer also refuses to export
+    receipts it cannot vouch for: tampered in place after logging, or
+    appended unsigned — the export fails closed rather than shipping
+    evidence that cannot be verified.
     """
-    
-    def __init__(self):
+
+    def __init__(self, signer: Optional[ReceiptSigner] = None):
+        self.signer = signer if signer is not None else ReceiptSigner.from_env()
         self.receipts: List[VerificationReceipt] = []
-    
+
     def log(self, receipt: VerificationReceipt) -> str:
-        """Log a receipt and return its ID"""
+        """Log a receipt and return its ID.
+
+        Signs the receipt first when a signer is configured, so every
+        retained receipt carries its signature from the moment it enters
+        the audit trail — the signature is minted at retention, not
+        retrofitted at export. A receipt whose metadata cannot be
+        canonically encoded (unserializable objects, NaN/Infinity) raises
+        before it is appended: it must not enter the trail looking signed
+        when it cannot be.
+        """
+        if self.signer is not None:
+            self.signer.sign_receipt(receipt)
         self.receipts.append(receipt)
         return receipt.receipt_id
-    
+
     def get_receipt(self, receipt_id: str) -> Optional[VerificationReceipt]:
         """Retrieve a receipt by ID"""
         for receipt in self.receipts:
             if receipt.receipt_id == receipt_id:
                 return receipt
         return None
-    
+
     def get_failures(self) -> List[VerificationReceipt]:
         """Get all failed verifications"""
         return [r for r in self.receipts if not r.verified]
-    
+
     def get_by_guard(self, guard_name: str) -> List[VerificationReceipt]:
         """Get all receipts from a specific guard"""
         return [r for r in self.receipts if guard_name in r.guard_name]
-    
+
     def export_json(self) -> str:
-        """Export all receipts as JSON"""
-        return json.dumps([r.to_dict() for r in self.receipts], indent=2)
-    
+        """Export all receipts as a signed audit envelope.
+
+        The export is an object, not a bare list: schema, algorithm, key
+        id, signature and the receipts. With a signer configured the
+        envelope signature covers everything else in the document — every
+        receipt and its per-receipt signature — so tampering, truncation
+        and reordering of the export all fail verification. Each receipt's
+        own signature is verified before export; one that does not verify
+        (edited in place after logging, or appended unsigned) stops the
+        export.
+
+        Without a signer the envelope is explicitly unsigned: ``alg``,
+        ``signature_key_id`` and ``signature`` are null, and every receipt
+        exports with null signature fields. Unsigned is a state a consumer
+        must opt into, never one it mistakes for signed.
+        """
+        if self.signer is not None:
+            receipts = []
+            for receipt in self.receipts:
+                self.signer.verify_receipt(receipt)
+                receipts.append(receipt.to_export_dict())
+            document: Dict[str, Any] = {
+                "schema": EXPORT_SCHEMA,
+                "alg": EXPORT_ALG,
+                "signature_key_id": self.signer.signing_kid,
+                "signature": None,
+                "receipts": receipts,
+            }
+            self.signer.sign_export_document(document)
+        else:
+            receipts = [r.to_export_dict() for r in self.receipts]
+            document = {
+                "schema": EXPORT_SCHEMA,
+                "alg": None,
+                "signature_key_id": None,
+                "signature": None,
+                "receipts": receipts,
+            }
+        return json.dumps(document, indent=2)
+
+    def verify_export_json(self, export: str) -> None:
+        """Verify an exported audit envelope; raise on any tampering.
+
+        Requires a signer: key material is what verification means here.
+        Every failure — unsigned export, unknown key id, envelope or
+        receipt signature mismatch, missing or injected fields — raises
+        ReceiptSignatureError. A clean export returns None.
+        """
+        if self.signer is None:
+            raise ReceiptSignatureError(
+                "no signer configured — provide one (or set "
+                "QWED_RECEIPT_SIGNING_KEY) to verify exports"
+            )
+        document = json.loads(export)
+        self.signer.verify_export_document(document)
+
     def summary(self) -> Dict[str, Any]:
         """Get summary statistics"""
         total = len(self.receipts)
         passed = sum(1 for r in self.receipts if r.verified)
-        
+
         by_guard: Dict[str, int] = {}
         for r in self.receipts:
             guard = r.guard_name.split(".")[0]
             by_guard[guard] = by_guard.get(guard, 0) + 1
-        
+
         return {
             "total_verifications": total,
             "passed": passed,
             "failed": total - passed,
             "pass_rate": f"{(passed/total)*100:.1f}%" if total > 0 else "N/A",
-            "by_guard": by_guard
+            "by_guard": by_guard,
         }
