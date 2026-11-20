@@ -398,20 +398,27 @@ class AuditLog:
         The log retains an independent snapshot of the signed receipt, so
         later changes to the caller's object — including a second log
         re-signing it under another key — never alter the evidence this
-        log holds.
+        log holds. The snapshot is taken once, before verification, and
+        that one copy is verified, signed and retained, so the verified,
+        signed and retained content are identical even if the caller's
+        object changes concurrently. The new signature is then written
+        back to the caller's receipt.
         """
+        snapshot = copy.deepcopy(receipt)
         if self.signer is not None:
-            if (receipt.signature is None) != (receipt.signature_key_id is None):
+            if (snapshot.signature is None) != (snapshot.signature_key_id is None):
                 raise ReceiptSignatureError(
-                    f"receipt {receipt.receipt_id} is half-signed — a "
+                    f"receipt {snapshot.receipt_id} is half-signed — a "
                     "signature without a key id (or the reverse) cannot be "
                     "verified or re-signed"
                 )
-            if receipt.signature is not None:
-                self.signer.verify_receipt(receipt)
-            self.signer.sign_receipt(receipt)
-        self.receipts.append(copy.deepcopy(receipt))
-        return receipt.receipt_id
+            if snapshot.signature is not None:
+                self.signer.verify_receipt(snapshot)
+            self.signer.sign_receipt(snapshot)
+            receipt.signature = snapshot.signature
+            receipt.signature_key_id = snapshot.signature_key_id
+        self.receipts.append(snapshot)
+        return snapshot.receipt_id
 
     def get_receipt(self, receipt_id: str) -> Optional[VerificationReceipt]:
         """Retrieve a receipt by ID"""

@@ -135,8 +135,9 @@ def test_signer_rejects_short_key_bytes():
 
 
 def test_signer_rejects_string_verification_key():
+    hex_text = KEY_B.hex()
     with pytest.raises(SigningKeyError):
-        ReceiptSigner(KEY_A, verification_keys=[KEY_B.hex()])
+        ReceiptSigner(KEY_A, verification_keys=[hex_text])
 
 
 def test_signer_rejects_short_verification_key():
@@ -534,8 +535,9 @@ def test_malformed_receipt_shape_refuses_to_verify(mutation):
 def test_receipt_not_a_dict_refuses_to_verify():
     document = json.loads(signed_export())
     document["receipts"][0] = ["not", "a", "dict"]
+    signer = make_signer()
     with pytest.raises(ReceiptSignatureError):
-        make_signer().verify_export_document(document)
+        signer.verify_export_document(document)
 
 
 def test_swapped_receipt_signatures_refuse_to_verify():
@@ -590,8 +592,9 @@ def test_verify_export_rejects_invalid_json():
 def test_verify_export_rejects_duplicate_member_names(inject):
     """Ambiguous evidence does not verify, whichever parser reads it."""
     log = AuditLog(signer=make_signer())
+    hostile = inject(signed_export())
     with pytest.raises(ReceiptSignatureError, match="duplicate JSON member"):
-        log.verify_export_json(inject(signed_export()))
+        log.verify_export_json(hostile)
 
 
 def test_non_string_key_id_refuses_to_verify():
@@ -948,3 +951,48 @@ def test_ucp_integration_signs_receipts_when_env_set(monkeypatch):
         assert receipt.signature_key_id == integration.audit_log.signer.signing_kid
     integration.audit_log.verify_export_json(integration.audit_log.export_json())
     assert result is not None
+
+
+def test_concurrent_mutation_during_log_cannot_reach_retained_evidence(monkeypatch):
+    """log() verifies, signs and retains one private snapshot: a change to the
+    caller's object between verification and signing is never signed."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify",
+        VerificationEngine.DECIMAL,
+        "1.00",
+        True,
+        computed_value="1.00",
+    )
+    signer.sign_receipt(receipt)
+    log = AuditLog(signer=signer)
+
+    real_verify = signer.verify_receipt
+
+    def verify_then_race(target):
+        real_verify(target)
+        receipt.computed_value = "999.00"  # another thread edits the original
+
+    monkeypatch.setattr(signer, "verify_receipt", verify_then_race)
+    log.log(receipt)
+    monkeypatch.setattr(signer, "verify_receipt", real_verify)
+
+    export = log.export_json()
+    assert json.loads(export)["receipts"][0]["computed_value"] == "1.00"
+    log.verify_export_json(export)
+    # The caller's edited object no longer matches the signature it was given.
+    with pytest.raises(ReceiptSignatureError):
+        signer.verify_receipt(receipt)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("engine_used", "Decimal"), ("status", "verified")],
+)
+def test_non_enum_field_fails_closed_at_export(field, value):
+    """A retained receipt whose enum field became a plain string refuses as
+    a verification error, not a raw AttributeError from serialisation."""
+    log = make_log(make_signer(), count=1)
+    setattr(log.receipts[0], field, value)
+    with pytest.raises(ReceiptSignatureError):
+        log.export_json()

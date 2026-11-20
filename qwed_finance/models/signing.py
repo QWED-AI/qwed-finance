@@ -48,8 +48,8 @@ EXPORT_SCHEMA = "qwed-finance/audit-log/v1"
 EXPORT_ALG = "HMAC-SHA256"
 MIN_KEY_BYTES = 32
 
-_SIGNING_KEY_ENV = "QWED_RECEIPT_SIGNING_KEY"
-_VERIFICATION_KEYS_ENV = "QWED_RECEIPT_VERIFICATION_KEYS"
+_SIGNING_ENV_VAR = "QWED_RECEIPT_SIGNING_KEY"
+_VERIFICATION_ENV_VAR = "QWED_RECEIPT_VERIFICATION_KEYS"
 
 # Fields a receipt carries in an export beyond its signed content.
 _RECEIPT_SIGNATURE_FIELDS = ("signature", "signature_key_id")
@@ -233,31 +233,31 @@ class ReceiptSigner:
         verifier can always mint signatures, so there is no verify-only
         deployment to configure here.
         """
-        signing_raw = os.environ.get(_SIGNING_KEY_ENV)
-        verification_raw = os.environ.get(_VERIFICATION_KEYS_ENV)
+        signing_raw = os.environ.get(_SIGNING_ENV_VAR)
+        verification_raw = os.environ.get(_VERIFICATION_ENV_VAR)
 
         if signing_raw is None:
             if verification_raw is not None:
                 raise SigningKeyError(
-                    f"{_VERIFICATION_KEYS_ENV} is set without "
-                    f"{_SIGNING_KEY_ENV}; set the signing key too — an HMAC "
+                    f"{_VERIFICATION_ENV_VAR} is set without "
+                    f"{_SIGNING_ENV_VAR}; set the signing key too — an HMAC "
                     "verifier is also a signer"
                 )
             return None
 
-        signing_key = parse_key_material(signing_raw, source=_SIGNING_KEY_ENV)
+        signing_key = parse_key_material(signing_raw, source=_SIGNING_ENV_VAR)
 
         verification_keys: Optional[List[bytes]] = None
         if verification_raw is not None:
             entries = verification_raw.split(",")
             if not any(entry.strip() for entry in entries):
                 raise SigningKeyError(
-                    f"{_VERIFICATION_KEYS_ENV} contains no keys — unset it "
+                    f"{_VERIFICATION_ENV_VAR} contains no keys — unset it "
                     "or list at least one hex key"
                 )
             verification_keys = [
                 parse_key_material(
-                    entry, source=f"{_VERIFICATION_KEYS_ENV} entry {index}"
+                    entry, source=f"{_VERIFICATION_ENV_VAR} entry {index}"
                 )
                 for index, entry in enumerate(entries, start=1)
             ]
@@ -327,8 +327,9 @@ class ReceiptSigner:
         Fail-closed: unsigned, tampered, or signed under an unknown key id
         (a rotation window that has closed) all refuse. A receipt whose
         content cannot even be canonically encoded (colliding metadata
-        keys, unserializable values) also refuses — a verification error,
-        never a raw TypeError from the normalisation step.
+        keys, unserializable values, an ``engine_used`` or ``status`` that is
+        no longer an enum member) also refuses — a verification error,
+        never a raw TypeError or AttributeError from serialisation.
         """
         receipt_id = getattr(receipt, "receipt_id", "<unknown>")
         signature = getattr(receipt, "signature", None)
@@ -341,7 +342,7 @@ class ReceiptSigner:
         key = self._lookup_key(kid, what=f"receipt {receipt_id}")
         try:
             content = receipt.to_dict()
-        except (TypeError, ValueError) as error:
+        except (AttributeError, TypeError, ValueError) as error:
             raise ReceiptSignatureError(
                 f"receipt {receipt_id} cannot be canonically encoded for "
                 f"verification: {error}"
