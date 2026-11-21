@@ -1269,7 +1269,8 @@ def test_half_signed_receipt_with_bad_content_is_a_signature_error(signature, ki
 )
 def test_oversized_integer_literal_refuses_without_a_digit_limit():
     """On Python 3.10.0-3.10.6 there is no digit limit: the literal parses,
-    and the export must still be refused by the schema and signature checks."""
+    and a tampered export must still be refused by the schema and signature
+    checks."""
     previous = sys.get_int_max_str_digits()
     sys.set_int_max_str_digits(0)
     try:
@@ -1286,3 +1287,38 @@ def test_oversized_integer_literal_refuses_without_a_digit_limit():
                 log.verify_export_json(text)
     finally:
         sys.set_int_max_str_digits(previous)
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "set_int_max_str_digits"),
+    reason="interpreter has no integer-digit limit to lift",
+)
+def test_genuine_export_with_a_long_integer_verifies_without_a_digit_limit():
+    """Without a digit limit a long integer is ordinary content: an export
+    that really was signed with one verifies. Only tampering is refused."""
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        log = AuditLog(signer=make_signer())
+        receipt = ReceiptGenerator.create_receipt(
+            "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+        )
+        receipt.metadata = {"n": int("1" * 5000)}
+        log.log(receipt)
+        log.verify_export_json(log.export_json())
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_unsigned_log_refuses_non_finite_metadata(value):
+    """Behaviour change: the old export emitted NaN/Infinity tokens, which
+    are not JSON. A log without a signer now refuses them when logged."""
+    log = AuditLog()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    receipt.metadata = {"score": value}
+    with pytest.raises(ValueError):
+        log.log(receipt)
+    assert log.receipts == []

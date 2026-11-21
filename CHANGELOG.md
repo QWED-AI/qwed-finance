@@ -67,19 +67,24 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   deep the stack already is, so signing, verification and export cannot
   overflow on content that was accepted.
 - `AuditLog.log` refuses, with or without a signer, content that cannot be
-  canonically JSON-encoded: unsupported values, colliding keys and an
+  canonically JSON-encoded. Unsupported values, colliding keys and an
   `engine_used` or `status` that is not an enum member raise `TypeError`;
-  NaN/Infinity raise `ValueError`. Before, such a receipt was accepted and
-  `export_json()` failed later. With a signer configured, a receipt that
-  already carries a signature or a key id raises `ReceiptSignatureError`
-  for the same content instead; an intact signed receipt is verified and
-  re-signed as before.
+  before, such a receipt was accepted and `export_json()` failed later.
+  NaN and Infinity raise `ValueError`: this is a behaviour change, since
+  `export_json()` used to emit them as `NaN`/`Infinity` tokens, which are
+  not JSON (RFC 8259) and which standard parsers reject. With a signer
+  configured, a receipt that already carries a signature or a key id
+  raises `ReceiptSignatureError` for the same content instead; an intact
+  signed receipt is verified and re-signed as before.
 - `AuditLog.verify_export_json` refuses nesting past the parser's
   recursion limit as `ReceiptSignatureError`, not `RecursionError`. On
-  Python versions with the integer-digit limit (3.10.7 and later), an
-  integer literal past it is refused as `ReceiptSignatureError`, not
-  `ValueError`; on 3.10.0–3.10.6 such a literal parses, and the export is
-  refused by the schema and signature checks.
+  Python with the integer-digit limit (3.10.7 and later), an integer
+  literal past the limit is refused as `ReceiptSignatureError`, not
+  `ValueError`, and such an integer cannot be logged in the first place
+  (`log()` raises `ValueError`). On 3.10.0–3.10.6 there is no limit: a
+  long literal in a tampered export is refused by the schema and
+  signature checks, and a genuinely signed export containing one
+  verifies.
 
 ### Fixed
 
