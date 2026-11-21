@@ -6,8 +6,8 @@ All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, ROUND_HALF_UP, getcontext
-from typing import Any, Callable, Optional, Tuple
+from decimal import Decimal, DecimalException, ROUND_HALF_UP, getcontext
+from typing import Any, Optional, Tuple
 from enum import Enum
 
 from ._numeric import (
@@ -34,26 +34,6 @@ MAX_COUPON_PERIODS = 1200
 # counts as converged. An absolute residual (it was 1e-10) let a bond with
 # a tiny face value converge at any yield: every price is within 1e-10.
 _PRICE_RESIDUAL = Decimal("1e-13")
-
-
-def _binary_float_type(value: Any) -> Optional[Callable[[float], Any]]:
-    """The binary float type of a maturity, or None for an exact value.
-
-    A Python float (and NumPy's float64, a float subclass) reads back as
-    float; another NumPy floating scalar as its own type (float32, float16).
-    int, Decimal and integral types are exact and get None, so their period
-    count is never snapped. Only these known types are called: a caller's
-    own numbers.Real is not.
-    """
-    if isinstance(value, float):
-        return float
-    try:
-        import numpy
-    except ImportError:  # pragma: no cover - numpy ships with pandas
-        return None
-    if isinstance(value, numpy.floating):
-        return type(value)
-    return None
 
 
 class DayCountConvention(Enum):
@@ -138,14 +118,12 @@ class BondGuard:
             fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
             cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
             p = number(price, "price", minimum=_ZERO, exclusive=True)
-            years = number(
-                years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True
-            )
+            number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
             frequency = positive_int(frequency, "frequency")
             freq = Decimal(frequency)
 
             # Calculate periodic values
-            n_periods = self._coupon_periods(years, frequency, years_to_maturity)
+            n_periods = self._coupon_periods(years_to_maturity, frequency)
             coupon_payment = (fv * cr) / freq
 
             # Newton-Raphson to find YTM
@@ -405,14 +383,12 @@ class BondGuard:
         fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
         cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
         y = number(ytm, "ytm")
-        years = number(
-            years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True
-        )
+        number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
         frequency = positive_int(frequency, "frequency")
         freq = Decimal(frequency)
 
         # Calculate convexity
-        n_periods = self._coupon_periods(years, frequency, years_to_maturity)
+        n_periods = self._coupon_periods(years_to_maturity, frequency)
         coupon_payment = (fv * cr) / freq
         periodic_rate = y / freq
         if 1 + periodic_rate <= 0:
@@ -534,44 +510,21 @@ class BondGuard:
         )
     
     @staticmethod
-    def _coupon_periods(years: Decimal, frequency: int, raw_years: Any) -> int:
+    def _coupon_periods(years_to_maturity: Any, frequency: int) -> int:
         """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
 
-        Counted in Decimal from the validated maturity, so a finite maturity
-        cannot overflow the count (``1e308 * 2`` is infinity in float). A
-        float maturity carries representation error — 2/12 years is
-        0.16666666666666666, and 12 periods of it 1.99...92. So when the
-        count is not whole, the nearest whole count is taken only if that
-        many periods, as a maturity in the input's own float type, *is* the
-        input — 2/12 is two monthly periods, and np.float32(5/6) at six a
-        year is five — and no neighbouring count is too, which would make
-        the schedule ambiguous. A float that is a genuine fraction of a
-        period, such as np.float16(8.3125) years (99.75 monthly periods),
-        is truncated, not rounded up. A Decimal or int maturity is exact and
-        never snapped. A maturity shorter than one period truncates to zero
-        periods, which leaves nothing to price: pricing the stub of a
-        partial period is #119, and until then such a bond is refused rather
-        than verified against an empty sum.
+        Counted as main counts them, ``int(years_to_maturity * frequency)``
+        in the maturity's own arithmetic, so a float maturity rounds as it
+        always has (``0.57 * 100`` years reads as 56 periods). Turning a
+        maturity into its intended schedule, partial period included, is
+        #119. What this adds is the bound: a count above MAX_COUPON_PERIODS —
+        including a product that overflowed to infinity, which ``int()``
+        would raise on — is refused, and so is a maturity shorter than one
+        period, which truncates to zero periods and leaves nothing to price
+        rather than an empty sum to verify against.
         """
-        periods = years * frequency
-        read = _binary_float_type(raw_years)
-        if read is not None:
-            nearest = periods.to_integral_value(rounding=ROUND_HALF_EVEN)
-
-            def is_input(count: Decimal) -> bool:
-                # That many periods as a maturity, rounded to the input's
-                # own float type, compared with the input itself.
-                return count > 0 and read(float(count / frequency)) == raw_years
-
-            if periods != nearest and is_input(nearest):
-                if is_input(nearest - 1) or is_input(nearest + 1):
-                    # The float cannot tell neighbouring counts apart;
-                    # rounding would pick one of them.
-                    raise UnverifiableError(
-                        "maturity is too imprecise to count coupon periods"
-                    )
-                periods = nearest
-        if periods > MAX_COUPON_PERIODS:
+        periods = years_to_maturity * frequency
+        if not periods <= MAX_COUPON_PERIODS:
             raise UnverifiableError(
                 f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
             )

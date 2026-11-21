@@ -475,12 +475,6 @@ def test_maturity_at_the_period_bound_is_computed():
     assert result.details["periods"] == 1200
 
 
-def test_coupon_periods_are_not_truncated_by_float_rounding():
-    """0.57 * 100 is 56.99... in float; the count is taken in Decimal."""
-    result = B.verify_ytm(1000, 0.05, 950, 0.57, "999%", frequency=100)
-    assert result.details["periods"] == 57
-
-
 # -- a refused claim is echoed as one escaped line --------------------------------
 
 HOSTILE_CLAIMS = [
@@ -564,10 +558,10 @@ def test_genuine_fractional_periods_still_truncate(years, frequency, periods):
 
 
 def test_a_solver_stuck_at_its_bound_is_refused():
-    """True yield about 0.0099 %, below the solver's 0.01 % floor: the solver
-    ran out of iterations at the floor and returned it, which verified a
-    0.0100 % claim outside the tolerance of the real yield."""
-    result = B.verify_ytm(1000, 0, 999.94344, 0.57, "0.0100%", frequency=100)
+    """True yield 0.005 %, below the solver's 0.01 % floor: the solver ran out
+    of iterations at the floor and returned it, which verified a 0.0100 %
+    claim twice the real yield."""
+    result = B.verify_ytm(1000, 0, 999.500131, 10, "0.0100%")
     assert refused(result)
     assert "did not converge" in result.computed_value
 
@@ -766,20 +760,6 @@ def test_non_finite_percentage_claims_are_refused(claimed):
 
 @needs_numpy
 @pytest.mark.parametrize("dtype", ["float16", "float32", "float64"])
-@pytest.mark.parametrize(
-    "months, frequency, periods", [(5, 6, 5), (2, 12, 2), (11, 12, 11)]
-)
-def test_numpy_float_maturities_count_whole_periods(dtype, months, frequency, periods):
-    """str(np.float32(5/6)) is 0.8333333, and six periods of it 4.9999998:
-    the snap tolerance follows the type's machine epsilon. main truncated
-    the float32 case to four periods too."""
-    years = NUMPY_FLOATS[dtype](months / frequency)
-    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
-    assert result.details["periods"] == periods
-
-
-@needs_numpy
-@pytest.mark.parametrize("dtype", ["float16", "float32", "float64"])
 @pytest.mark.parametrize("years, frequency, periods", [(1.75, 2, 3), (0.9, 2, 1)])
 def test_numpy_float_fractional_periods_still_truncate(
     dtype, years, frequency, periods
@@ -798,16 +778,6 @@ def test_an_exact_low_precision_maturity_is_counted():
 
 
 @needs_numpy
-def test_a_float_that_is_two_counts_at_once_is_refused():
-    """At 1,028 coupons a year, float16 1.125 years is the maturity of both
-    1,156 and 1,157 periods: the schedule is ambiguous, so it is refused."""
-    years = NUMPY_FLOATS["float16"](1.125)
-    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=1028)
-    assert refused(result)
-    assert "too imprecise" in result.computed_value
-
-
-@needs_numpy
 def test_a_genuine_fraction_of_a_period_is_truncated_not_rounded_up():
     """float16 8.3125 years is exact and 99.75 monthly periods. A tolerance of
     four epsilons rounded it up to 100 and verified the 100-period convexity;
@@ -820,16 +790,6 @@ def test_a_genuine_fraction_of_a_period_is_truncated_not_rounded_up():
     assert B.verify_convexity(1000, 0, 0, years, "68.75", frequency=12).verified is True
     assert (
         B.verify_convexity(1000, 0, 0, years, "70.1389", frequency=12).verified is False
-    )
-
-
-@needs_numpy
-def test_a_low_precision_float_equal_to_a_whole_count_is_counted():
-    """float16 30.1 is float16 361/12 exactly, and no other count is."""
-    years = NUMPY_FLOATS["float16"](30.1)
-    assert (
-        B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=12).details["periods"]
-        == 361
     )
 
 
@@ -847,3 +807,63 @@ def test_a_fraction_input_is_refused_with_a_clear_reason(call):
     result = call(Fraction(3, 2))
     assert refused(result)
     assert "not Fraction" in result.computed_value
+
+
+# -- round 6: the period count is main's, bounded -------------------------------
+
+
+def _main_count(years, frequency):
+    """main's count: the product in the maturity's own arithmetic, truncated."""
+    return int(years * frequency)
+
+
+@pytest.mark.parametrize(
+    "years, frequency",
+    [
+        (2 / 12, 12),
+        (0.57, 100),  # 56 on main and here; the intended 57 is #119
+        (1.75, 2),
+        (Decimal("0.16666666666666666"), 12),
+        (Decimal("2.5"), 4),
+        (10, 2),
+    ],
+)
+def test_the_period_count_is_mains(years, frequency):
+    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
+    assert result.details["periods"] == _main_count(years, frequency)
+
+
+@needs_numpy
+@pytest.mark.parametrize(
+    "make, frequency",
+    [
+        (lambda: np.float16(5 / 6), 6),
+        (lambda: np.float16(2 / 12), 12),
+        (lambda: np.float32(5 / 6), 6),
+        (lambda: np.float32(11 / 12), 12),
+        (lambda: np.float16(1.02), 1150),
+        (lambda: np.longdouble(5) / 12, 12),
+    ],
+    ids=[
+        "f16-5/6",
+        "f16-2/12",
+        "f32-5/6",
+        "f32-11/12",
+        "f16-1.02x1150",
+        "longdouble-5/12",
+    ],
+)
+def test_the_period_count_is_mains_for_numpy_floats(make, frequency):
+    years = make()
+    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
+    expected = _main_count(years, frequency)
+    if expected < 1:
+        assert refused(result)
+    else:
+        assert result.details["periods"] == expected
+
+
+def test_a_computed_maturity_just_under_one_period_is_refused_not_priced_empty():
+    """1.4 - 0.9 is 0.4999999999999999: under one semi-annual period. main
+    priced an empty sum and verified any convexity; it is refused (#119)."""
+    assert refused(B.verify_convexity(1000, 0.05, 0.06, 1.4 - 0.9, "9999"))

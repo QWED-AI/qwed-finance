@@ -31,17 +31,12 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   positive integer (`2.0` is refused); and a yield at which the discount
   factor `1 + y/frequency` is at or below zero. A maturity shorter than
   one coupon period is refused rather than priced; pricing the stub is
-  #119. The coupon-period count is taken in Decimal. A float maturity
-  carries representation error, so when its count is not whole, the
-  nearest whole count is taken only if that many periods, as a maturity
-  in the input's own float type, is exactly the input — `2/12` years is
-  two monthly periods, `0.57 * 100` years is 57 periods rather than 56,
-  and `np.float32(5/6)` years at six coupons a year is five, where main
-  counted four. A float that is a genuine fraction of a period is
-  truncated, not rounded: `np.float16(8.3125)` years is 99 monthly
-  periods. A float that is the maturity of two neighbouring counts at
-  once is refused as too imprecise. A Decimal or int maturity is never
-  rounded this way.
+  #119. The coupon-period count itself is unchanged —
+  `int(years_to_maturity × frequency)` in the maturity's own arithmetic,
+  so a float maturity rounds as before (`0.57 * 100` years reads as 56
+  periods; mapping a maturity onto its intended schedule is #119) — but
+  it is bounded, so a maturity that overflows the count (`1e308` years)
+  is refused instead of raising `OverflowError`.
   NumPy integer and float scalars are accepted as before; NumPy's `bool_`
   is refused like `bool`.
 - `verify_ytm` refuses a claim when its yield solver runs out of
