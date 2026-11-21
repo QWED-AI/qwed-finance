@@ -8,6 +8,31 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+### Security
+
+- **A computed value of zero no longer verifies any claim (#98).**
+  `RiskGuard.verify_var`, `RiskGuard.verify_expected_shortfall`,
+  `BondGuard.verify_convexity` and `BondGuard.verify_ytm` compared a claim
+  as a percentage of the computed value and skipped the comparison when
+  that value was zero or negative, so any claim verified — a zero-volatility
+  VaR verified `$5,000,000`, a zero-maturity convexity verified `9999`. A
+  computed value of zero is now compared absolutely: the claim verifies
+  only if it rounds to zero at the precision the result is reported in.
+  A non-zero value is compared relative to its absolute value.
+- The same four methods refuse inputs their formula cannot evaluate, as
+  `verified=False` with an `UNVERIFIABLE (reason)` computed value, instead
+  of verifying or raising: NaN, Infinity, `bool` and non-numeric inputs; a
+  negative portfolio value, volatility or tail loss; a holding period at or
+  below zero; a confidence level outside (0, 1); a face value or price at
+  or below zero, a negative coupon rate, a maturity at or below zero or
+  shorter than one coupon period; a `frequency` that is not a positive
+  integer (`2.0` is refused); and a yield at which the discount factor
+  `1 + y/frequency` is at or below zero. A maturity shorter than one
+  coupon period is refused rather than priced; pricing the stub is #119.
+- Claims those methods cannot read — not a string, unparseable, NaN or
+  Infinity, or too large to compare — are refused the same way instead of
+  raising `InvalidOperation`.
+
 ### Added
 
 - **Receipts are signed when they enter the audit trail, and exports

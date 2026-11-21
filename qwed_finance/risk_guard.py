@@ -7,8 +7,10 @@ All financial math uses Decimal for exact arithmetic.
 
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, InvalidOperation, ROUND_HALF_UP, getcontext
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from enum import Enum
+
+from ._numeric import UnverifiableError, claim, number, within_tolerance
 
 # Set precision high enough for statistical calculations
 getcontext().prec = 50
@@ -27,6 +29,8 @@ class ConfidenceLevel(Enum):
     NINETY_FIVE = 0.95
     NINETY_NINE = 0.99
 
+
+_ZERO = Decimal("0")
 
 # Z-scores for standard confidence levels (stored as Decimal strings)
 Z_SCORES = {
@@ -57,6 +61,9 @@ class RiskGuard:
     following the TradingGuard gold standard.
     """
     
+    VAR_FORMULA = "VaR = P × σ × z × √t"
+    ES_FORMULA = "ES = E[Loss | Loss > VaR]"
+
     def __init__(self, tolerance_pct: float = 1.0):
         """
         Initialize the Risk Guard.
@@ -94,40 +101,57 @@ class RiskGuard:
         Returns:
             RiskResult with verification status
         """
-        llm_val = self._parse_money(llm_var)
-        
-        # Get z-score (interpolate if not standard)
-        z_score = Z_SCORES.get(confidence_level, self._interpolate_z(confidence_level))
-        
-        # Parametric VaR formula — fully Decimal
-        # Use Decimal.sqrt() instead of math.sqrt() to avoid float leak
-        holding_d = Decimal(str(holding_period_days))
-        sqrt_holding = holding_d.sqrt()
-        
-        var = Decimal(str(portfolio_value)) * Decimal(str(daily_volatility)) * z_score * sqrt_holding
-        computed_var = var.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        
-        # Compare
-        if computed_var > 0:
-            diff_pct = abs(computed_var - llm_val) / computed_var * 100
-        else:
-            diff_pct = Decimal("0")
-        verified = diff_pct <= self.tolerance_pct
-        
-        return RiskResult(
-            verified=verified,
-            llm_value=f"${llm_val:,.2f}",
-            computed_value=f"${computed_var:,.2f}",
-            difference=f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%" if not verified else None,
-            formula_used="VaR = P × σ × z × √t",
-            details={
-                "portfolio_value": f"${Decimal(str(portfolio_value)):,.0f}",
-                "daily_volatility": f"{Decimal(str(daily_volatility)) * 100}%",
-                "z_score": str(z_score),
-                "holding_period": f"{holding_period_days} days",
-                "confidence": f"{Decimal(str(confidence_level)) * 100}%"
-            }
-        )
+        try:
+            llm_val = claim(self._parse_money, llm_var)
+            # A negative portfolio or volatility gives a negative "VaR", and a
+            # non-positive holding period a zero or undefined one; none is a
+            # value at risk the formula defines (#98).
+            portfolio = number(portfolio_value, "portfolio_value", minimum=_ZERO)
+            volatility = number(daily_volatility, "daily_volatility", minimum=_ZERO)
+            confidence = number(
+                confidence_level, "confidence_level", minimum=_ZERO, exclusive=True
+            )
+            if confidence >= 1:
+                raise UnverifiableError("confidence_level must be < 1")
+            holding_d = number(
+                holding_period_days, "holding_period_days", minimum=_ZERO, exclusive=True
+            )
+
+            # Get z-score (interpolate if not standard)
+            z_score = Z_SCORES.get(confidence_level, self._interpolate_z(confidence_level))
+
+            # Parametric VaR formula — fully Decimal
+            # Use Decimal.sqrt() instead of math.sqrt() to avoid float leak
+            sqrt_holding = holding_d.sqrt()
+
+            var = portfolio * volatility * z_score * sqrt_holding
+            computed_var = var.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            # Compare
+            verified, diff_pct = within_tolerance(
+                computed_var, llm_val, self.tolerance_pct, Decimal("0.01")
+            )
+
+            return RiskResult(
+                verified=verified,
+                llm_value=f"${llm_val:,.2f}",
+                computed_value=f"${computed_var:,.2f}",
+                difference=self._difference(diff_pct, computed_var, llm_val, verified),
+                formula_used=self.VAR_FORMULA,
+                details={
+                    "portfolio_value": f"${portfolio:,.0f}",
+                    "daily_volatility": f"{volatility * 100}%",
+                    "z_score": str(z_score),
+                    "holding_period": f"{holding_period_days} days",
+                    "confidence": f"{confidence * 100}%"
+                }
+            )
+        except UnverifiableError as reason:
+            return self._unverifiable(llm_var, reason, self.VAR_FORMULA)
+        except DecimalException:
+            return self._unverifiable(
+                llm_var, "claim outside verifiable range", self.VAR_FORMULA
+            )
     
     def verify_beta(
         self,
@@ -459,33 +483,41 @@ class RiskGuard:
         Returns:
             RiskResult with verification status
         """
-        llm_val = self._parse_money(llm_es)
-        
-        # ES is simply the average of tail losses
-        computed_es = Decimal(str(tail_loss_avg))
-        computed_es = computed_es.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        
-        # Compare
-        if computed_es > 0:
-            diff_pct = abs(computed_es - llm_val) / computed_es * 100
-        else:
-            diff_pct = Decimal("0")
-        verified = diff_pct <= self.tolerance_pct
-        
-        var_d = Decimal(str(var_amount))
-        es_to_var = computed_es / var_d if var_d > 0 else Decimal("0")
-        
-        return RiskResult(
-            verified=verified,
-            llm_value=f"${llm_val:,.2f}",
-            computed_value=f"${computed_es:,.2f}",
-            difference=f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%" if not verified else None,
-            formula_used="ES = E[Loss | Loss > VaR]",
-            details={
-                "VaR": f"${var_d:,.2f}",
-                "ES_to_VaR_ratio": f"{es_to_var.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}x"
-            }
-        )
+        try:
+            llm_val = claim(self._parse_money, llm_es)
+            # Losses are positive amounts here, as verify_var reports VaR; a
+            # negative average tail "loss" is a gain this formula does not
+            # cover (#98).
+            computed_es = number(tail_loss_avg, "tail_loss_avg", minimum=_ZERO)
+            var_d = number(var_amount, "var_amount", minimum=_ZERO)
+
+            # ES is simply the average of tail losses
+            computed_es = computed_es.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            # Compare
+            verified, diff_pct = within_tolerance(
+                computed_es, llm_val, self.tolerance_pct, Decimal("0.01")
+            )
+
+            es_to_var = computed_es / var_d if var_d > 0 else Decimal("0")
+
+            return RiskResult(
+                verified=verified,
+                llm_value=f"${llm_val:,.2f}",
+                computed_value=f"${computed_es:,.2f}",
+                difference=self._difference(diff_pct, computed_es, llm_val, verified),
+                formula_used=self.ES_FORMULA,
+                details={
+                    "VaR": f"${var_d:,.2f}",
+                    "ES_to_VaR_ratio": f"{es_to_var.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}x"
+                }
+            )
+        except UnverifiableError as reason:
+            return self._unverifiable(llm_es, reason, self.ES_FORMULA)
+        except DecimalException:
+            return self._unverifiable(
+                llm_es, "claim outside verifiable range", self.ES_FORMULA
+            )
     
     def verify_information_ratio(
         self,
@@ -541,6 +573,34 @@ class RiskGuard:
             }
         )
     
+    @staticmethod
+    def _unverifiable(raw_claim: Any, reason: Any, formula: str) -> RiskResult:
+        """A verdict for an input or claim the guard cannot verify (#98)."""
+        return RiskResult(
+            verified=False,
+            llm_value=str(raw_claim),
+            computed_value=f"UNVERIFIABLE ({reason})",
+            formula_used=formula,
+        )
+
+    @staticmethod
+    def _difference(
+        diff_pct: Optional[Decimal],
+        computed: Decimal,
+        claimed: Decimal,
+        verified: bool,
+    ) -> Optional[str]:
+        """How far a refused monetary claim is from the computed value.
+
+        A relative difference when the computed value is non-zero; the
+        absolute amount when it is zero, where a percentage has no scale.
+        """
+        if verified:
+            return None
+        if diff_pct is None:
+            return f"${abs(claimed - computed):,.2f}"
+        return f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%"
+
     def _interpolate_z(self, confidence: float) -> Decimal:
         """Interpolate z-score for non-standard confidence levels"""
         c = Decimal(str(confidence))
