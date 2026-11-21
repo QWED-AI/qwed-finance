@@ -1331,13 +1331,17 @@ def test_unsigned_log_refuses_non_finite_metadata(value):
 def test_long_integer_on_a_signed_receipt_is_a_signature_error():
     """A long integer added to a signed receipt refuses as
     ReceiptSignatureError with a signer configured, whether the digit limit
-    stops the re-encoding (3.10.7+) or the signature check does (no limit)."""
+    stops the re-encoding (3.10.7+, at any configured limit below 5001 digits)
+    or the signature check does (no limit, or a higher one)."""
     signer = make_signer()
     receipt = ReceiptGenerator.create_receipt(
         "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
     )
     signer.sign_receipt(receipt)
-    receipt.metadata = {"n": int("1" * 4000) * 10**1000}
+    # Built by arithmetic, not int(str): parsing a long string is itself
+    # subject to the digit limit, which a stricter PYTHONINTMAXSTRDIGITS
+    # would trip during setup, before log() is reached.
+    receipt.metadata = {"n": 10**5000}
     log = AuditLog(signer=signer)
     with pytest.raises(ReceiptSignatureError):
         log.log(receipt)
