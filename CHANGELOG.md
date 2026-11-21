@@ -72,19 +72,21 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   before, such a receipt was accepted and `export_json()` failed later.
   NaN and Infinity raise `ValueError`: this is a behaviour change, since
   `export_json()` used to emit them as `NaN`/`Infinity` tokens, which are
-  not JSON (RFC 8259) and which standard parsers reject. With a signer
-  configured, a receipt that already carries a signature or a key id
-  raises `ReceiptSignatureError` for the same content instead; an intact
-  signed receipt is verified and re-signed as before.
+  not JSON (RFC 8259); strict parsers reject them, though Python's `json`
+  module accepts them by default. With a signer configured, a receipt that
+  already carries a signature or a key id raises `ReceiptSignatureError`
+  for the same content instead; an intact signed receipt is verified and
+  re-signed as before.
 - `AuditLog.verify_export_json` refuses nesting past the parser's
   recursion limit as `ReceiptSignatureError`, not `RecursionError`. On
   Python with the integer-digit limit (3.10.7 and later), an integer
   literal past the limit is refused as `ReceiptSignatureError`, not
   `ValueError`, and such an integer cannot be logged in the first place
-  (`log()` raises `ValueError`). On 3.10.0–3.10.6 there is no limit: a
-  long literal in a tampered export is refused by the schema and
-  signature checks, and a genuinely signed export containing one
-  verifies.
+  (`log()` raises `ValueError`, or `ReceiptSignatureError` for a receipt
+  carrying signature state when a signer is configured, as above). On
+  3.10.0–3.10.6 there is no limit: a long literal in a tampered export is
+  refused by the schema and signature checks, and a genuinely signed
+  export containing one verifies.
 
 ### Fixed
 

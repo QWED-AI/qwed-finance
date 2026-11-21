@@ -12,6 +12,7 @@ Key ids support rotation: retired keys stay in the verification window
 while evidence signed under them must still verify, and close afterwards.
 """
 
+import contextlib
 import hashlib
 import json
 import sys
@@ -1263,17 +1264,30 @@ def test_half_signed_receipt_with_bad_content_is_a_signature_error(signature, ki
     assert log.receipts == []
 
 
-@pytest.mark.skipif(
-    not hasattr(sys, "set_int_max_str_digits"),
-    reason="interpreter has no integer-digit limit to lift",
-)
+@contextlib.contextmanager
+def _no_int_digit_limit():
+    """Run as on an interpreter with no integer-digit limit (3.10.0-3.10.6).
+
+    Where the limit exists (3.10.7+) it is lifted for the block and restored
+    after; where it does not, the interpreter already behaves this way and
+    the block runs unchanged, so these tests run on every version.
+    """
+    if not hasattr(sys, "set_int_max_str_digits"):
+        yield
+        return
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(0)
+    try:
+        yield
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
 def test_oversized_integer_literal_refuses_without_a_digit_limit():
     """On Python 3.10.0-3.10.6 there is no digit limit: the literal parses,
     and a tampered export must still be refused by the schema and signature
     checks."""
-    previous = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(0)
-    try:
+    with _no_int_digit_limit():
         log = make_log(make_signer(), count=1)
         export = log.export_json()
         big = "1" * 5000
@@ -1285,20 +1299,12 @@ def test_oversized_integer_literal_refuses_without_a_digit_limit():
         for text in hostile:
             with pytest.raises(ReceiptSignatureError):
                 log.verify_export_json(text)
-    finally:
-        sys.set_int_max_str_digits(previous)
 
 
-@pytest.mark.skipif(
-    not hasattr(sys, "set_int_max_str_digits"),
-    reason="interpreter has no integer-digit limit to lift",
-)
 def test_genuine_export_with_a_long_integer_verifies_without_a_digit_limit():
     """Without a digit limit a long integer is ordinary content: an export
     that really was signed with one verifies. Only tampering is refused."""
-    previous = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(0)
-    try:
+    with _no_int_digit_limit():
         log = AuditLog(signer=make_signer())
         receipt = ReceiptGenerator.create_receipt(
             "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
@@ -1306,8 +1312,6 @@ def test_genuine_export_with_a_long_integer_verifies_without_a_digit_limit():
         receipt.metadata = {"n": int("1" * 5000)}
         log.log(receipt)
         log.verify_export_json(log.export_json())
-    finally:
-        sys.set_int_max_str_digits(previous)
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -1320,5 +1324,21 @@ def test_unsigned_log_refuses_non_finite_metadata(value):
     )
     receipt.metadata = {"score": value}
     with pytest.raises(ValueError):
+        log.log(receipt)
+    assert log.receipts == []
+
+
+def test_long_integer_on_a_signed_receipt_is_a_signature_error():
+    """A long integer added to a signed receipt refuses as
+    ReceiptSignatureError with a signer configured, whether the digit limit
+    stops the re-encoding (3.10.7+) or the signature check does (no limit)."""
+    signer = make_signer()
+    receipt = ReceiptGenerator.create_receipt(
+        "TestGuard.verify", VerificationEngine.DECIMAL, "1.00", True
+    )
+    signer.sign_receipt(receipt)
+    receipt.metadata = {"n": int("1" * 4000) * 10**1000}
+    log = AuditLog(signer=signer)
+    with pytest.raises(ReceiptSignatureError):
         log.log(receipt)
     assert log.receipts == []
