@@ -21,6 +21,14 @@ from qwed_finance._numeric import (
     within_tolerance,
 )
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - numpy ships with pandas
+    np = None
+
+# Only the NumPy tests skip without NumPy; the rest of the module still runs.
+needs_numpy = pytest.mark.skipif(np is None, reason="numpy is not installed")
+
 R = RiskGuard()
 B = BondGuard()
 
@@ -654,9 +662,8 @@ def test_an_overflowing_input_is_not_blamed_on_the_claim():
 
 # -- round 3 -------------------------------------------------------------------
 
-np = pytest.importorskip("numpy")
 
-
+@needs_numpy
 @pytest.mark.parametrize(
     "call",
     [
@@ -682,6 +689,7 @@ def test_numpy_scalars_are_accepted_as_on_main(call):
     assert call().verified is True
 
 
+@needs_numpy
 @pytest.mark.parametrize(
     "call",
     [
@@ -744,3 +752,63 @@ def test_a_coupon_bond_at_exactly_zero_yield_is_refused_not_misreported():
 @pytest.mark.parametrize("claimed", ["NaN%", "Infinity%", "-Infinity %", "sNaN%"])
 def test_non_finite_percentage_claims_are_refused(claimed):
     assert refused(B.verify_ytm(1000, 0.05, 950, 10, claimed))
+
+
+# -- round 4: lower-precision NumPy floats ----------------------------------------
+
+
+@needs_numpy
+@pytest.mark.parametrize("dtype", ["float16", "float32", "float64"])
+@pytest.mark.parametrize(
+    "months, frequency, periods", [(5, 6, 5), (2, 12, 2), (11, 12, 11)]
+)
+def test_numpy_float_maturities_count_whole_periods(dtype, months, frequency, periods):
+    """str(np.float32(5/6)) is 0.8333333, and six periods of it 4.9999998:
+    the snap tolerance follows the type's machine epsilon. main truncated
+    the float32 case to four periods too."""
+    years = getattr(np, dtype)(months / frequency)
+    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
+    assert result.details["periods"] == periods
+
+
+@needs_numpy
+@pytest.mark.parametrize("dtype", ["float16", "float32", "float64"])
+@pytest.mark.parametrize("years, frequency, periods", [(1.75, 2, 3), (0.9, 2, 1)])
+def test_numpy_float_fractional_periods_still_truncate(
+    dtype, years, frequency, periods
+):
+    result = B.verify_ytm(
+        1000, 0.05, 999, getattr(np, dtype)(years), "5%", frequency=frequency
+    )
+    assert result.details["periods"] == periods
+
+
+@needs_numpy
+def test_an_exact_low_precision_maturity_is_counted():
+    """float16 represents 30 exactly, so 360 monthly periods is exact."""
+    result = B.verify_ytm(1000, 0.05, 999, np.float16(30), "5%", frequency=12)
+    assert result.details["periods"] == 360
+
+
+@needs_numpy
+def test_a_maturity_too_imprecise_to_count_is_refused():
+    """float16 cannot tell 361 periods from its neighbours: refused, not rounded."""
+    result = B.verify_ytm(1000, 0.05, 999, np.float16(30.1), "5%", frequency=12)
+    assert refused(result)
+    assert "too imprecise" in result.computed_value
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda f: R.verify_var(1_000_000, f, 0.95, 1, "$32,900"),
+        lambda f: B.verify_ytm(1000, 0.05, 950, f, "5.66%"),
+    ],
+    ids=["var", "ytm"],
+)
+def test_a_fraction_input_is_refused_with_a_clear_reason(call):
+    from fractions import Fraction
+
+    result = call(Fraction(3, 2))
+    assert refused(result)
+    assert "not Fraction" in result.computed_value

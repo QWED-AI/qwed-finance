@@ -35,7 +35,12 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   float maturity within `1e-9` coupon periods of a whole number is that
   number (float representation error stays below `1e-12`), so `0.57 * 100`
   years is no longer truncated to 56 periods and `2/12` years is two
-  monthly periods. A Decimal or int maturity is never rounded this way.
+  monthly periods. For a lower-precision NumPy float the tolerance grows
+  with its machine epsilon (four epsilons of the count), so
+  `np.float32(5/6)` years at six coupons a year is five periods, where
+  main truncated it to four; a maturity in a float too imprecise to tell
+  neighbouring counts apart (float16 beyond about 127 periods) is refused.
+  A Decimal or int maturity is never rounded this way.
   NumPy integer and float scalars are accepted as before; NumPy's `bool_`
   is refused like `bool`.
 - `verify_ytm` refuses a claim when its yield solver runs out of

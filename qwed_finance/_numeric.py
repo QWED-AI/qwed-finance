@@ -29,13 +29,21 @@ def number(
     registered as ``numbers.Real`` such as NumPy's ``int64`` and ``float32``,
     which main read through ``str()`` too. bool is refused although it is an
     int subclass (``True`` would read as 1); NumPy's ``bool_`` is not a real
-    number and is refused with everything else. NaN and Infinity are
+    number and is refused with everything else, and a non-integral rational
+    such as ``Fraction`` is refused rather than rounded. NaN and Infinity are
     refused because they compare false against every bound or poison the
     arithmetic. With ``minimum``, the value must be at least it, or strictly
     above it when ``exclusive``.
     """
     if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         raise UnverifiableError(f"{name} must be a number")
+    if isinstance(value, numbers.Rational) and not isinstance(value, numbers.Integral):
+        # A Fraction is a real number, but its str() ("3/2") is not a
+        # Decimal, and converting it by division would round: 1/12 years
+        # read to 50 digits counts no monthly period.
+        raise UnverifiableError(
+            f"{name} must be an int, float or Decimal, not {type(value).__name__}"
+        )
     try:
         result = Decimal(str(value))
     except (DecimalException, ValueError):

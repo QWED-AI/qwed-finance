@@ -5,6 +5,7 @@ Deterministic verification for YTM, Duration, Convexity calculations
 All financial math uses Decimal for exact arithmetic.
 """
 
+import sys
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, ROUND_HALF_UP, getcontext
 from typing import Any, Optional, Tuple
@@ -31,16 +32,36 @@ _ZERO = Decimal("0")
 MAX_COUPON_PERIODS = 1200
 
 # How close a period count from a float maturity must be to a whole number
-# to count as one. str() of a float keeps about 17 significant digits, so
-# 2/12 years becomes 0.16666666666666666 and 12 periods of it 1.99...92;
-# the error stays below 1e-12 for every count up to MAX_COUPON_PERIODS,
-# far under any fraction of a period that means something.
+# to count as one, at least. str() of a float keeps about 17 significant
+# digits, so 2/12 years becomes 0.16666666666666666 and 12 periods of it
+# 1.99...92; the error stays below 1e-12 for every count up to
+# MAX_COUPON_PERIODS, far under any fraction of a period that means
+# something. A lower-precision binary float (NumPy's float32, float16) has a
+# larger error, so the tolerance grows with the type's machine epsilon.
 _FLOAT_PERIOD_SNAP = Decimal("1e-9")
 
 # Price residual, relative to the bond's price, at which the yield solver
 # counts as converged. An absolute residual (it was 1e-10) let a bond with
 # a tiny face value converge at any yield: every price is within 1e-10.
 _PRICE_RESIDUAL = Decimal("1e-13")
+
+
+def _binary_float_epsilon(value: Any) -> Optional[Decimal]:
+    """Machine epsilon of a binary float's type, or None for exact values.
+
+    A Python float (and NumPy's float64, a float subclass) has the double
+    epsilon; another NumPy floating scalar has its own (float32 about
+    1.2e-7, float16 about 9.8e-4). int, Decimal and integral types are
+    exact and get None, so they are never snapped.
+    """
+    if isinstance(value, float):
+        return Decimal(str(sys.float_info.epsilon))
+    dtype = getattr(value, "dtype", None)
+    if getattr(dtype, "kind", None) == "f":
+        import numpy
+
+        return Decimal(str(float(numpy.finfo(dtype).eps)))
+    return None
 
 
 class DayCountConvention(Enum):
@@ -536,9 +557,19 @@ class BondGuard:
         bond is refused rather than verified against an empty sum.
         """
         periods = years * frequency
-        if isinstance(raw_years, float):
+        epsilon = _binary_float_epsilon(raw_years)
+        if epsilon is not None:
             nearest = periods.to_integral_value(rounding=ROUND_HALF_EVEN)
-            if abs(periods - nearest) <= _FLOAT_PERIOD_SNAP:
+            # str() of a binary float is off by at most about half an epsilon
+            # relative; four epsilons of the count leave room for that.
+            tolerance = max(_FLOAT_PERIOD_SNAP, nearest * epsilon * 4)
+            if periods != nearest and tolerance >= Decimal("0.5"):
+                # The float cannot tell neighbouring counts apart (float16
+                # beyond about 127 periods); rounding would pick one.
+                raise UnverifiableError(
+                    "maturity is too imprecise to count coupon periods"
+                )
+            if abs(periods - nearest) <= tolerance:
                 periods = nearest
         if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(
