@@ -85,11 +85,11 @@ def within_tolerance(
     """
     try:
         if computed == 0:
-            return abs(claimed) < quantum / 2, None
+            return claimed.copy_abs() < quantum / 2, None
         difference_pct = abs(computed - claimed) / abs(computed) * 100
         return difference_pct <= tolerance_pct, difference_pct
     except DecimalException:
-        raise UnverifiableError("claim outside verifiable range") from None
+        raise UnverifiableError("value outside verifiable range") from None
 
 
 def positive_int(value: Any, name: str) -> int:
@@ -108,11 +108,17 @@ def shown(raw: Any) -> str:
 
     A refused claim is untrusted text, and callers print results — the
     GitHub Action writes them to its log, where a line starting with ``::``
-    is a workflow command. repr() escapes every line break and other
-    non-printable character, so the echo is always a single line; it is
-    then cut to MAX_SHOWN_CLAIM characters.
+    is a workflow command. A string is rendered with ``str.__repr__``, which
+    escapes every line break and other non-printable character, so the echo
+    is always a single line, and which a str subclass cannot override. Any
+    other value is a fixed placeholder: its repr is caller code that may
+    raise, inject a line break (through ``__repr__`` or a class name) or be
+    unrepresentable (an int past the digit limit). The text is then cut to
+    MAX_SHOWN_CLAIM characters.
     """
-    text = repr(raw)
+    if not isinstance(raw, str):
+        return "<non-string claim>"
+    text = str.__repr__(raw)
     if len(text) > MAX_SHOWN_CLAIM:
         text = text[: MAX_SHOWN_CLAIM - 3] + "..."
     return text

@@ -6,8 +6,8 @@ All financial math uses Decimal for exact arithmetic.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, DecimalException, ROUND_HALF_UP, getcontext
-from typing import Any, Optional
+from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, ROUND_HALF_UP, getcontext
+from typing import Any, Optional, Tuple
 from enum import Enum
 
 from ._numeric import (
@@ -29,6 +29,13 @@ _ZERO = Decimal("0")
 # period on each iteration, so an unbounded maturity is an unbounded
 # amount of work, and one large enough overflows the period count.
 MAX_COUPON_PERIODS = 1200
+
+# How close a period count from a float maturity must be to a whole number
+# to count as one. str() of a float keeps about 17 significant digits, so
+# 2/12 years becomes 0.16666666666666666 and 12 periods of it 1.99...92;
+# the error stays below 1e-12 for every count up to MAX_COUPON_PERIODS,
+# far under any fraction of a period that means something.
+_FLOAT_PERIOD_SNAP = Decimal("1e-9")
 
 
 class DayCountConvention(Enum):
@@ -120,13 +127,19 @@ class BondGuard:
             freq = Decimal(frequency)
 
             # Calculate periodic values
-            n_periods = self._coupon_periods(years, frequency)
+            n_periods = self._coupon_periods(years, frequency, years_to_maturity)
             coupon_payment = (fv * cr) / freq
 
             # Newton-Raphson to find YTM
-            computed_ytm = self._solve_ytm(
+            computed_ytm, converged = self._solve_ytm_with_status(
                 fv, coupon_payment, p, n_periods, frequency
             )
+            if not converged:
+                # The solver ran out of iterations without pricing the bond,
+                # typically stuck at a bound of its range: the value it
+                # returns is not the yield, and a claim equal to it must not
+                # verify (#98, #100).
+                raise UnverifiableError("yield solver did not converge")
 
             # Compare. A rate is reported to 0.0001 %, i.e. 0.000001.
             verified, diff_pct = within_tolerance(
@@ -157,7 +170,7 @@ class BondGuard:
             return self._unverifiable(llm_ytm, reason, self.YTM_FORMULA)
         except DecimalException:
             return self._unverifiable(
-                llm_ytm, "claim outside verifiable range", self.YTM_FORMULA
+                llm_ytm, "value outside verifiable range", self.YTM_FORMULA
             )
     
     def _solve_ytm(
@@ -169,6 +182,24 @@ class BondGuard:
         frequency: int
     ) -> Decimal:
         """Newton-Raphson YTM solver using Decimal arithmetic."""
+        return self._solve_ytm_with_status(
+            face_value, coupon, price, n_periods, frequency
+        )[0]
+
+    def _solve_ytm_with_status(
+        self,
+        face_value: Decimal,
+        coupon: Decimal,
+        price: Decimal,
+        n_periods: int,
+        frequency: int
+    ) -> Tuple[Decimal, bool]:
+        """_solve_ytm, also reporting whether the solver converged.
+
+        Returns ``(ytm, converged)``. ``converged`` is True only when the
+        bond priced at ``ytm`` is within 1e-10 of ``price``; when the
+        iterations run out first, ``ytm`` is wherever the solver stopped.
+        """
         freq = Decimal(str(frequency))
         
         # Initial guess (current yield)
@@ -192,7 +223,7 @@ class BondGuard:
             # Newton step
             diff = bond_price - price
             if abs(diff) < Decimal("1E-10"):
-                break
+                return ytm, True
             
             if abs(dpv) > Decimal("1E-10"):
                 ytm = ytm - diff / dpv
@@ -201,7 +232,7 @@ class BondGuard:
             # Upper bound 10.0 (1000%) supports distressed debt scenarios
             ytm = max(Decimal("0.0001"), min(ytm, Decimal("10")))
         
-        return ytm
+        return ytm, False
     
     def verify_duration(
         self,
@@ -317,7 +348,7 @@ class BondGuard:
             return self._unverifiable(llm_convexity, reason, self.CONVEXITY_FORMULA)
         except DecimalException:
             return self._unverifiable(
-                llm_convexity, "claim outside verifiable range", self.CONVEXITY_FORMULA
+                llm_convexity, "value outside verifiable range", self.CONVEXITY_FORMULA
             )
 
     def _convexity(
@@ -348,7 +379,7 @@ class BondGuard:
         freq = Decimal(frequency)
 
         # Calculate convexity
-        n_periods = self._coupon_periods(years, frequency)
+        n_periods = self._coupon_periods(years, frequency, years_to_maturity)
         coupon_payment = (fv * cr) / freq
         periodic_rate = y / freq
         if 1 + periodic_rate <= 0:
@@ -470,18 +501,25 @@ class BondGuard:
         )
     
     @staticmethod
-    def _coupon_periods(years: Decimal, frequency: int) -> int:
+    def _coupon_periods(years: Decimal, frequency: int, raw_years: Any) -> int:
         """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
 
         Counted in Decimal from the validated maturity, so a finite maturity
-        can neither overflow the count (``1e308 * 2`` is infinity in float)
-        nor be truncated by float rounding (``0.57 * 100`` is 56.99... in
-        float). A maturity shorter than one period truncates to zero periods,
-        which leaves nothing to price: pricing the stub of a partial period
-        is #119, and until then such a bond is refused rather than verified
-        against an empty sum.
+        cannot overflow the count (``1e308 * 2`` is infinity in float). A
+        float maturity carries representation error — 2/12 years is
+        0.16666666666666666, and 12 periods of it 1.99...92 — so a count
+        from a float within _FLOAT_PERIOD_SNAP of a whole number is that
+        number: 2/12 is two monthly periods and 0.57 * 100 is 57. A Decimal
+        or int maturity is exact and never snapped. A maturity shorter than
+        one period truncates to zero periods, which leaves nothing to price:
+        pricing the stub of a partial period is #119, and until then such a
+        bond is refused rather than verified against an empty sum.
         """
         periods = years * frequency
+        if isinstance(raw_years, float):
+            nearest = periods.to_integral_value(rounding=ROUND_HALF_EVEN)
+            if abs(periods - nearest) <= _FLOAT_PERIOD_SNAP:
+                periods = nearest
         if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(
                 f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"

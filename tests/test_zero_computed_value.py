@@ -504,5 +504,149 @@ def test_shown_keeps_short_printable_claims_readable():
     from qwed_finance._numeric import shown
 
     assert shown("lots") == "'lots'"
-    assert shown(None) == "None"
+    assert shown(None) == "<non-string claim>"
     assert shown("5\n::x") == "'5\\n::x'"
+
+
+# -- round 2 -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("months", [1, 2, 4, 8, 11])
+def test_monthly_float_maturities_count_every_period(months):
+    """months/12 in float carries representation error: Decimal(str(2/12)) * 12
+    is 1.99...92, which truncated to one period. A float count within float
+    error of a whole number is that number."""
+    result = B.verify_ytm(1000, 0.05, 999, months / 12, "5%", frequency=12)
+    assert result.details["periods"] == months
+
+
+def test_two_month_convexity_prices_two_periods():
+    assert (
+        B.verify_convexity(1000, 0, 0, 2 / 12, "0.0417", frequency=12).verified is True
+    )
+
+
+def test_one_month_bond_is_priced_not_refused():
+    result = B.verify_convexity(1000, 0, 0, 1 / 12, "0", frequency=12)
+    assert not result.computed_value.startswith("UNVERIFIABLE")
+
+
+def test_an_explicit_decimal_maturity_is_never_snapped():
+    """A Decimal maturity is exact: 0.16666666666666666 years is just under
+    two monthly periods, and counts as one."""
+    result = B.verify_ytm(
+        1000, 0.05, 999, Decimal("0.16666666666666666"), "5%", frequency=12
+    )
+    assert result.details["periods"] == 1
+
+
+@pytest.mark.parametrize(
+    "years, frequency, periods", [(1.75, 2, 3), (0.9, 2, 1), (2.5, 4, 10)]
+)
+def test_genuine_fractional_periods_still_truncate(years, frequency, periods):
+    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
+    assert result.details["periods"] == periods
+
+
+def test_a_solver_stuck_at_its_bound_is_refused():
+    """True yield about 0.0099 %, below the solver's 0.01 % floor: the solver
+    ran out of iterations at the floor and returned it, which verified a
+    0.0100 % claim outside the tolerance of the real yield."""
+    result = B.verify_ytm(1000, 0, 999.94344, 0.57, "0.0100%", frequency=100)
+    assert refused(result)
+    assert "did not converge" in result.computed_value
+
+
+@pytest.mark.parametrize(
+    "price, coupon, years, frequency",
+    [(1050, 0.0, 5, 2), (1200, 0.0, 10, 1), (1500, 0.01, 30, 12)],
+)
+def test_negative_yield_bonds_are_refused_not_verified_at_the_floor(
+    price, coupon, years, frequency
+):
+    """Priced above par with too little coupon, these yield below zero, which
+    the solver cannot reach (#100). The floor value it stopped at must not
+    verify."""
+    result = B.verify_ytm(1000, coupon, price, years, "0.0100%", frequency=frequency)
+    assert refused(result)
+
+
+def test_half_unit_compares_the_exact_claim():
+    """abs() rounds to the context precision; copy_abs() does not."""
+    claimed = "$0.004" + "9" * 60
+    assert R.verify_var(1_000_000, 0, 0.95, 1, claimed).verified is True
+
+
+def test_a_refused_half_cent_displays_as_a_cent():
+    result = R.verify_var(1_000_000, 0, 0.95, 1, "$0.005")
+    assert result.verified is False
+    assert result.llm_value == "$0.01"
+    assert result.difference == "$0.01"
+
+
+class _RaisingRepr:
+    def __repr__(self):
+        raise RuntimeError("no repr")
+
+
+class _InjectingStr(str):
+    def __repr__(self):
+        return "ok\n::warning::from a str subclass"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        10**5000,
+        _RaisingRepr(),
+        type("a\n::warning::class name", (), {})(),
+        _InjectingStr("lots\n::x"),
+    ],
+    ids=[
+        "int-past-digit-limit",
+        "raising-repr",
+        "newline-in-class-name",
+        "str-subclass-repr",
+    ],
+)
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: R.verify_var(1_000_000, 0.02, 0.95, 1, c),
+        lambda c: R.verify_expected_shortfall(1_000_000, 32900, 45000, c),
+        lambda c: B.verify_ytm(1000, 0.05, 950, 10, c),
+        lambda c: B.verify_convexity(1000, 0.05, 0.06, 10, c),
+    ],
+    ids=["var", "es", "ytm", "convexity"],
+)
+def test_claims_whose_repr_is_caller_code_are_still_refused_safely(call, hostile):
+    """repr() of a non-string, or of a str subclass, is caller code: it can
+    raise, inject a line break, or be unrepresentable."""
+    result = call(hostile)
+    assert result.verified is False
+    assert result.llm_value.isprintable()
+    assert len(result.llm_value) <= 80
+
+
+@pytest.mark.parametrize(
+    "call, claimed",
+    [
+        # Zero downside deviation: the ratio is undefined.
+        (lambda c: R.verify_sortino_ratio(0.1, 0.0, [0.0], c), "9" * 100),
+        # A long claim that parses (leading zeros) and overflows the comparison.
+        (
+            lambda c: R.verify_sortino_ratio(0.1, 0.0, [-0.1, 0.05], c),
+            "0" * 90 + "1e999999",
+        ),
+    ],
+    ids=["zero-downside-deviation", "outside-range"],
+)
+def test_every_sortino_unverifiable_refusal_is_capped(call, claimed):
+    result = call(claimed)
+    assert result.computed_value.startswith("UNVERIFIABLE")
+    assert len(result.llm_value) <= 80
+
+
+def test_an_overflowing_input_is_not_blamed_on_the_claim():
+    result = R.verify_var(1e300, 0.02, 0.95, 1, "$1")
+    assert result.computed_value == "UNVERIFIABLE (value outside verifiable range)"

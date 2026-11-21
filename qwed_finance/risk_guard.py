@@ -134,7 +134,7 @@ class RiskGuard:
 
             return RiskResult(
                 verified=verified,
-                llm_value=f"${llm_val:,.2f}",
+                llm_value=f"${self._cents(llm_val):,.2f}",
                 computed_value=f"${computed_var:,.2f}",
                 difference=self._difference(diff_pct, computed_var, llm_val, verified),
                 formula_used=self.VAR_FORMULA,
@@ -150,7 +150,7 @@ class RiskGuard:
             return self._unverifiable(llm_var, reason, self.VAR_FORMULA)
         except DecimalException:
             return self._unverifiable(
-                llm_var, "claim outside verifiable range", self.VAR_FORMULA
+                llm_var, "value outside verifiable range", self.VAR_FORMULA
             )
     
     def verify_beta(
@@ -375,7 +375,7 @@ class RiskGuard:
             # endorsed any large number without recomputation (#43).
             return RiskResult(
                 verified=False,
-                llm_value=f"{llm_val}",
+                llm_value=shown(llm_sortino),
                 computed_value="UNVERIFIABLE (zero downside deviation)",
                 formula_used=self.SORTINO_FORMULA
             )
@@ -403,7 +403,7 @@ class RiskGuard:
             # context during comparison/formatting: verdict, never raise.
             return RiskResult(
                 verified=False,
-                llm_value=f"{llm_val}",
+                llm_value=shown(llm_sortino),
                 computed_value="UNVERIFIABLE (claim outside verifiable range)",
                 formula_used=self.SORTINO_FORMULA
             )
@@ -508,7 +508,7 @@ class RiskGuard:
 
             return RiskResult(
                 verified=verified,
-                llm_value=f"${llm_val:,.2f}",
+                llm_value=f"${self._cents(llm_val):,.2f}",
                 computed_value=f"${computed_es:,.2f}",
                 difference=self._difference(diff_pct, computed_es, llm_val, verified),
                 formula_used=self.ES_FORMULA,
@@ -521,7 +521,7 @@ class RiskGuard:
             return self._unverifiable(llm_es, reason, self.ES_FORMULA)
         except DecimalException:
             return self._unverifiable(
-                llm_es, "claim outside verifiable range", self.ES_FORMULA
+                llm_es, "value outside verifiable range", self.ES_FORMULA
             )
     
     def verify_information_ratio(
@@ -579,6 +579,11 @@ class RiskGuard:
         )
     
     @staticmethod
+    def _cents(value: Decimal) -> Decimal:
+        """Round a money amount half up to cents for display."""
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @staticmethod
     def _unverifiable(raw_claim: Any, reason: Any, formula: str) -> RiskResult:
         """A verdict for an input or claim the guard cannot verify (#98)."""
         return RiskResult(
@@ -603,7 +608,7 @@ class RiskGuard:
         if verified:
             return None
         if diff_pct is None:
-            return f"${abs(claimed - computed):,.2f}"
+            return f"${RiskGuard._cents(abs(claimed - computed)):,.2f}"
         return f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%"
 
     def _interpolate_z(self, confidence: float) -> Decimal:
