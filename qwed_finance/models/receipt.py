@@ -468,10 +468,14 @@ class AuditLog:
         Signs the receipt when a signer is configured, so every retained
         receipt carries its signature from the moment it enters the audit
         trail — the signature is minted at retention, not retrofitted at
-        export. A receipt whose metadata cannot be canonically encoded
-        (unserializable objects, NaN/Infinity) raises before it is
-        appended: it must not enter the trail looking signed when it
-        cannot be.
+        export. A receipt whose content cannot be canonically encoded
+        raises before it is appended — it must not enter the trail looking
+        signed when it cannot be: TypeError for unserializable values,
+        colliding keys and an ``engine_used`` or ``status`` that is not an
+        enum member; ValueError for NaN/Infinity and for nesting deeper than
+        MAX_NESTING_DEPTH. With a signer configured, a receipt that already
+        carries a signature or a key id raises ReceiptSignatureError for the
+        same content instead, as verifying existing evidence always does.
 
         An already-signed receipt is verified before it is re-signed:
         replacing a signature without checking it would mint a fresh
@@ -487,10 +491,10 @@ class AuditLog:
         log holds. The snapshot is taken once, before verification, as
         plain JSON data (no caller-defined copy hooks run, so nothing in it
         can stay aliased to the caller's object), and that one copy is
-        verified, signed and retained, so the verified,
-        signed and retained content are identical even if the caller's
-        object changes concurrently. The new signature is then written
-        back to the caller's receipt.
+        verified, signed and retained, so the verified, signed and retained
+        content are identical even if the caller's object changes
+        concurrently. The new signature is then written back to the
+        caller's receipt.
         """
         try:
             snapshot = _detached_snapshot(receipt)
@@ -556,9 +560,9 @@ class AuditLog:
         signed.
 
         Each receipt is snapshotted (the same detached copy log() makes)
-        before it is verified and serialised,
-        so the exported content is exactly the content that was verified
-        even if another thread mutates the retained receipt mid-export.
+        before it is verified and serialised, so the exported content is
+        exactly the content that was verified even if another thread
+        mutates the retained receipt mid-export.
         """
         receipts = []
         if self.signer is not None:
@@ -599,10 +603,11 @@ class AuditLog:
         """Verify an exported audit envelope; raise on any tampering.
 
         Requires a signer: key material is what verification means here.
-        Every failure — invalid JSON, a duplicate member name, unsigned
-        export, unknown key id, envelope or receipt signature mismatch,
-        missing or injected fields — raises ReceiptSignatureError. A clean
-        export returns None.
+        Every failure — invalid JSON, a duplicate member name, nesting past
+        the parser's recursion limit, an integer literal past Python's digit
+        limit (3.10.7+), unsigned export, unknown key id, envelope or
+        receipt signature mismatch, missing or injected fields — raises
+        ReceiptSignatureError. A clean export returns None.
 
         Duplicate JSON member names are refused at every level of the
         parsed document: ``json.loads`` keeps only the last value for a
