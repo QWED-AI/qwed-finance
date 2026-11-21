@@ -650,3 +650,97 @@ def test_every_sortino_unverifiable_refusal_is_capped(call, claimed):
 def test_an_overflowing_input_is_not_blamed_on_the_claim():
     result = R.verify_var(1e300, 0.02, 0.95, 1, "$1")
     assert result.computed_value == "UNVERIFIABLE (value outside verifiable range)"
+
+
+# -- round 3 -------------------------------------------------------------------
+
+np = pytest.importorskip("numpy")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: R.verify_var(np.int64(1_000_000), 0.02, 0.95, 1, "$32,900"),
+        lambda: R.verify_var(1_000_000, np.float32(0.02), 0.95, 1, "$32,900"),
+        lambda: R.verify_var(1_000_000, np.float64(0.02), 0.95, np.int32(1), "$32,900"),
+        lambda: B.verify_ytm(
+            1000, 0.05, 950, np.float64(10), "5.66%", frequency=np.int64(2)
+        ),
+        lambda: B.verify_convexity(
+            np.int64(1000), 0.05, 0.06, 10, "71.7854", frequency=np.int8(2)
+        ),
+    ],
+    ids=[
+        "int64",
+        "float32",
+        "float64-and-int32",
+        "ytm-int64-frequency",
+        "convexity-int8-frequency",
+    ],
+)
+def test_numpy_scalars_are_accepted_as_on_main(call):
+    assert call().verified is True
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: R.verify_var(1_000_000, np.bool_(True), 0.95, 1, "$32,900"),
+        lambda: B.verify_ytm(1000, 0.05, 950, 10, "5.66%", frequency=np.float64(2.0)),
+        lambda: B.verify_ytm(1000, 0.05, 950, 10, "5.66%", frequency=np.bool_(True)),
+        lambda: R.verify_var(1_000_000, np.float64("nan"), 0.95, 1, "$32,900"),
+    ],
+    ids=["bool_", "float-frequency", "bool_-frequency", "nan"],
+)
+def test_numpy_values_that_are_not_valid_inputs_are_refused(call):
+    assert refused(call())
+
+
+def test_a_yield_found_on_the_last_allowed_step_converges():
+    """The candidate the last Newton step produces is priced before the
+    solver reports non-convergence."""
+    assert (
+        BondGuard(max_iterations=3).verify_ytm(1000, 0.05, 950, 10, "5.66%").verified
+        is True
+    )
+
+
+def test_a_last_candidate_outside_the_residual_is_still_refused():
+    assert refused(BondGuard(max_iterations=2).verify_ytm(1000, 0.05, 950, 10, "5.66%"))
+
+
+def test_a_tiny_bond_is_held_to_the_same_precision():
+    """With an absolute residual of 1e-10, every price of a 1e-12 bond was
+    already "converged": the solver stopped at its starting guess, 0, and
+    verified a 0 % claim for a bond yielding about 7.05 %."""
+    assert B.verify_ytm(1e-12, 0, 5e-13, 10, "0%").verified is False
+    assert B.verify_ytm(1e-12, 0, 5e-13, 10, "7.05%").verified is True
+
+
+@pytest.mark.parametrize(
+    "as_percent, as_fraction",
+    [
+        ("0.00004" + "9" * 60 + "%", "0.0000004" + "9" * 60),  # just under half a unit
+        ("0.00005%", "0.0000005"),  # exactly half a unit
+        ("0.00005" + "0" * 59 + "1%", "0.0000005" + "0" * 59 + "1"),  # just over
+    ],
+    ids=["under", "at", "over"],
+)
+def test_percent_and_fraction_spellings_get_the_same_verdict(as_percent, as_fraction):
+    """Dividing by 100 rounded a long percentage onto the bound; the
+    exponent is shifted exactly instead."""
+    by_percent = B.verify_ytm(1000, 0.0, 1000, 10, as_percent).verified
+    by_fraction = B.verify_ytm(1000, 0.0, 1000, 10, as_fraction).verified
+    assert by_percent is by_fraction
+
+
+def test_a_coupon_bond_at_exactly_zero_yield_is_refused_not_misreported():
+    """Priced at the sum of its cash flows, this bond yields exactly 0, which
+    the solver cannot reach from a positive start past its 0.01 % floor
+    (#100). It is refused rather than reported at the floor."""
+    assert refused(B.verify_ytm(1000, 0.01, 1050, 5, "0%", frequency=1))
+
+
+@pytest.mark.parametrize("claimed", ["NaN%", "Infinity%", "-Infinity %", "sNaN%"])
+def test_non_finite_percentage_claims_are_refused(claimed):
+    assert refused(B.verify_ytm(1000, 0.05, 950, 10, claimed))

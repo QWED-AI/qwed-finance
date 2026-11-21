@@ -7,6 +7,7 @@ turn each of those into an ``UnverifiableError`` reason, which the guard
 returns as ``verified=False`` instead of raising.
 """
 
+import numbers
 from decimal import Decimal, DecimalException
 from typing import Any, Callable, Optional, Tuple
 
@@ -24,12 +25,16 @@ def number(
 ) -> Decimal:
     """Read a numeric input as Decimal, refusing what the formula cannot use.
 
-    bool is refused although it is an int subclass (``True`` would read as
-    1), and so are NaN and Infinity, which compare false against every bound
-    or poison the arithmetic. With ``minimum``, the value must be at least
-    it, or strictly above it when ``exclusive``.
+    Any real number type is accepted — int, float, Decimal, and types
+    registered as ``numbers.Real`` such as NumPy's ``int64`` and ``float32``,
+    which main read through ``str()`` too. bool is refused although it is an
+    int subclass (``True`` would read as 1); NumPy's ``bool_`` is not a real
+    number and is refused with everything else. NaN and Infinity are
+    refused because they compare false against every bound or poison the
+    arithmetic. With ``minimum``, the value must be at least it, or strictly
+    above it when ``exclusive``.
     """
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+    if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         raise UnverifiableError(f"{name} must be a number")
     try:
         result = Decimal(str(value))
@@ -93,10 +98,14 @@ def within_tolerance(
 
 
 def positive_int(value: Any, name: str) -> int:
-    """Read a count that must be a whole number above zero (bool refused)."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    """Read a count that must be a whole number above zero.
+
+    Any integral type is accepted (int, NumPy's ``int64``); bool is refused,
+    and so is a float, even an integral one such as ``2.0``.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 1:
         raise UnverifiableError(f"{name} must be a positive integer")
-    return value
+    return int(value)
 
 
 # Longest refused claim echoed back in a result.

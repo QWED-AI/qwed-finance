@@ -32,13 +32,22 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   factor `1 + y/frequency` is at or below zero. A maturity shorter than
   one coupon period is refused rather than priced; pricing the stub is
   #119. The coupon-period count is taken in Decimal, and a count from a
-  float maturity within float representation error of a whole number is
-  that number, so `0.57 * 100` years is no longer truncated to 56 periods
-  and `2/12` years is two monthly periods.
+  float maturity within `1e-9` coupon periods of a whole number is that
+  number (float representation error stays below `1e-12`), so `0.57 * 100`
+  years is no longer truncated to 56 periods and `2/12` years is two
+  monthly periods. A Decimal or int maturity is never rounded this way.
+  NumPy integer and float scalars are accepted as before; NumPy's `bool_`
+  is refused like `bool`.
 - `verify_ytm` refuses a claim when its yield solver runs out of
   iterations without pricing the bond, instead of comparing against
   wherever the solver stopped — typically its lower bound of 0.01 %,
-  which verified a claim of `0.0100%` for a bond yielding 0.0099 %.
+  which verified a claim of `0.0100%` for a bond yielding 0.0099 %. The
+  solver counts as converged when the price residual is within `1e-13`
+  of the price, relative to it, rather than within an absolute `1e-10`,
+  which let a bond with a tiny face value converge at any yield; the
+  candidate from its last allowed step is checked too. A percentage
+  claim is converted exactly, so it gets the same verdict as the same
+  value written as a decimal fraction.
 - Claims those methods cannot read — not a string, unparseable, NaN or
   Infinity, or too large to compare — are refused the same way instead of
   raising `InvalidOperation`. A claim refused as `UNVERIFIABLE` is echoed

@@ -37,6 +37,11 @@ MAX_COUPON_PERIODS = 1200
 # far under any fraction of a period that means something.
 _FLOAT_PERIOD_SNAP = Decimal("1e-9")
 
+# Price residual, relative to the bond's price, at which the yield solver
+# counts as converged. An absolute residual (it was 1e-10) let a bond with
+# a tiny face value converge at any yield: every price is within 1e-10.
+_PRICE_RESIDUAL = Decimal("1e-13")
+
 
 class DayCountConvention(Enum):
     """Bond day count conventions"""
@@ -197,8 +202,11 @@ class BondGuard:
         """_solve_ytm, also reporting whether the solver converged.
 
         Returns ``(ytm, converged)``. ``converged`` is True only when the
-        bond priced at ``ytm`` is within 1e-10 of ``price``; when the
-        iterations run out first, ``ytm`` is wherever the solver stopped.
+        bond priced at ``ytm`` is within ``_PRICE_RESIDUAL`` of ``price``,
+        relative to the price, so a bond with a tiny face value is held to
+        the same precision as any other. Every candidate is checked,
+        including the one the last allowed step produced; when none meets
+        the residual, ``ytm`` is wherever the solver stopped.
         """
         freq = Decimal(str(frequency))
         
@@ -222,17 +230,29 @@ class BondGuard:
             
             # Newton step
             diff = bond_price - price
-            if abs(diff) < Decimal("1E-10"):
+            if abs(diff) <= price * _PRICE_RESIDUAL:
                 return ytm, True
             
-            if abs(dpv) > Decimal("1E-10"):
+            if dpv != 0:
                 ytm = ytm - diff / dpv
             
             # Keep YTM in a reasonable range for convergence
             # Upper bound 10.0 (1000%) supports distressed debt scenarios
             ytm = max(Decimal("0.0001"), min(ytm, Decimal("10")))
         
-        return ytm, False
+        # The last step's candidate has not been priced yet.
+        final_price = self._bond_price(face_value, coupon, ytm, n_periods, freq)
+        return ytm, abs(final_price - price) <= price * _PRICE_RESIDUAL
+
+    @staticmethod
+    def _bond_price(
+        face_value: Decimal, coupon: Decimal, ytm: Decimal, n_periods: int, freq: Decimal
+    ) -> Decimal:
+        """Price of the bond at ``ytm``: discounted coupons plus face value."""
+        pv_coupons = Decimal("0")
+        for t in range(1, n_periods + 1):
+            pv_coupons += coupon / ((1 + ytm / freq) ** t)
+        return pv_coupons + face_value / ((1 + ytm / freq) ** n_periods)
     
     def verify_duration(
         self,
@@ -573,7 +593,15 @@ class BondGuard:
         """
         rate_str = rate_str.strip()
         if "%" in rate_str:
-            return Decimal(rate_str.replace("%", "").strip()) / Decimal("100")
+            percent = Decimal(rate_str.replace("%", "").strip())
+            if not percent.is_finite():
+                return percent
+            # Shift the exponent instead of dividing by 100: division rounds
+            # to the context precision, so a long percentage claim could round
+            # onto a comparison bound that its decimal-fraction spelling does
+            # not reach, and the two would get different verdicts.
+            sign, digits, exponent = percent.as_tuple()
+            return Decimal((sign, digits, exponent - 2))
         # No % symbol: treat as decimal fraction (0.05 means 5%)
         return Decimal(rate_str)
     
