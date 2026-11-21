@@ -8,6 +8,55 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+### Security
+
+- **A computed value of zero no longer verifies any claim (#98).**
+  `RiskGuard.verify_var`, `RiskGuard.verify_expected_shortfall`,
+  `BondGuard.verify_convexity` and `BondGuard.verify_ytm` compared a claim
+  as a percentage of the computed value and skipped the comparison when
+  that value was zero or negative, so any claim verified — a zero-volatility
+  VaR verified `$5,000,000`, a zero-maturity convexity verified `9999`. A
+  computed value of zero is now compared absolutely: the claim verifies
+  only if it rounds to zero at the precision the result is reported in.
+  A non-zero value is compared relative to its absolute value.
+- The same four methods refuse inputs their formula cannot evaluate, as
+  `verified=False` with an `UNVERIFIABLE (reason)` computed value, instead
+  of verifying or raising: NaN, Infinity, `bool` and non-numeric inputs; a
+  negative portfolio value, volatility, VaR amount or tail loss; a tail
+  loss average below the VaR amount, which no distribution has; a holding
+  period at or below zero; a confidence level outside (0, 1); a face value
+  or price at or below zero, a negative coupon rate, a maturity at or
+  below zero, shorter than one coupon period or longer than 1,200 coupon
+  periods (100 years of monthly coupons); a `frequency` that is not a
+  positive integer (`2.0` is refused); and a yield at which the discount
+  factor `1 + y/frequency` is at or below zero. A maturity shorter than
+  one coupon period is refused rather than priced; pricing the stub is
+  #119. The coupon-period count itself is unchanged —
+  `int(years_to_maturity × frequency)` in the maturity's own arithmetic,
+  so a float maturity rounds as before (`0.57 * 100` years reads as 56
+  periods; mapping a maturity onto its intended schedule is #119) — but
+  it is bounded, so a maturity that overflows the count (`1e308` years)
+  is refused instead of raising `OverflowError`.
+  NumPy integer and float scalars are accepted as before; NumPy's `bool_`
+  is refused like `bool`.
+- `verify_ytm` refuses a claim when its yield solver runs out of
+  iterations without pricing the bond, instead of comparing against
+  wherever the solver stopped — typically its lower bound of 0.01 %,
+  which verified a claim of `0.0100%` for a bond yielding 0.0099 %. The
+  solver counts as converged when the price residual is within `1e-13`
+  of the price, relative to it, rather than within an absolute `1e-10`,
+  which let a bond with a tiny face value converge at any yield; the
+  candidate from its last allowed step is checked too. A percentage
+  claim is converted exactly, so it gets the same verdict as the same
+  value written as a decimal fraction.
+- Claims those methods cannot read — not a string, unparseable, NaN or
+  Infinity, or too large to compare — are refused the same way instead of
+  raising `InvalidOperation`. A claim refused as `UNVERIFIABLE` is echoed
+  in `llm_value` as one escaped line of at most 80 characters (a
+  non-string claim as `<non-string claim>`), never as raw text, so it
+  cannot write a workflow command into the GitHub Action's log. Every
+  `UNVERIFIABLE` refusal in `verify_sortino_ratio` echoes the same way.
+
 ### Added
 
 - **Receipts are signed when they enter the audit trail, and exports
