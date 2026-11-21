@@ -143,7 +143,11 @@ def test_ucp_token_rejects_malformed_amounts():
         assert len(amount_receipts) == 1
         assert any("Invalid amount" in v for v in amount_receipts[0].violations)
         assert len(integration.audit_log.receipts) == before + 1
-        assert integration.audit_log.receipts[-1] is amount_receipts[0]
+        # The log retains an independent snapshot of the signed receipt
+        # (#90): same evidence, no longer the same Python object - a later
+        # re-sign of the caller's receipt cannot alter retained evidence.
+        assert integration.audit_log.receipts[-1] == amount_receipts[0]
+        assert integration.audit_log.receipts[-1].receipt_id == amount_receipts[0].receipt_id
 
 
 @pytest.mark.parametrize("amount", [float("nan"), -5, float("inf"), True, None, "100"])

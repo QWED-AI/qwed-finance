@@ -8,6 +8,86 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ## [Unreleased]
 
+### Added
+
+- **Receipts are signed when they enter the audit trail, and exports
+  carry the signatures (#90, follow-up to #44).** `AuditLog` now holds a
+  `ReceiptSigner`, resolved from `QWED_RECEIPT_SIGNING_KEY` (hex, at
+  least 32 bytes decoded) by default: `AuditLog.log` signs every receipt
+  with the #44 HMAC primitive as it is retained, and the guard and
+  integration flows (`CrossGuard`, `UCPIntegration`,
+  `OpenResponsesIntegration`) pick this up with no code change. A signer
+  is fail-closed about its configuration: a malformed, empty or
+  too-short key raises at construction — never silently signs nothing.
+- `QWED_RECEIPT_VERIFICATION_KEYS` names retired keys still accepted for
+  verification, the rotation window: evidence signed under an old key
+  keeps verifying until the key is removed, and refuses afterwards.
+  Key ids are derived from the key material, so a key id cannot lie about
+  which key signed. Empty list entries raise rather than being skipped.
+- `AuditLog.verify_export_json` verifies an exported envelope and fails
+  closed on every deviation: unsigned export, unknown key id, tampered
+  receipt or envelope, injected or missing fields, truncated or reordered
+  receipts, a signature replayed across artifacts.
+
+### Changed
+
+- **`AuditLog.export_json` returns a signed envelope object, not a bare
+  array (breaking).** The export is now
+  `{"schema": "qwed-finance/audit-log/v1", "alg": "HMAC-SHA256",
+  "signature_key_id": "<key id>", "signature": "<hmac hex>",
+  "receipts": [...]}`; each receipt carries its own `signature` and
+  `signature_key_id`, and the envelope signature covers everything else
+  in the document, so truncation and reordering of an export are
+  detectable, which per-receipt signatures alone cannot do. Without a
+  signer the envelope is explicitly unsigned: `alg`, `signature` and
+  every receipt's signature fields are null — a receipt signed elsewhere
+  does not carry its signature into an unsigned export. With one
+  configured, the export verifies every receipt first and refuses to
+  ship evidence it cannot vouch for. The envelope stays HMAC — tamper
+  evidence for key holders, not third-party attestation; that envelope
+  is #37.
+- `AuditLog.log` retains an independent snapshot of each signed receipt,
+  so mutating the caller's object — or re-signing the same receipt into
+  another log under another key — never changes the evidence a log
+  already holds. Re-signing verifies the existing signature first and
+  refuses on a mismatch (the tamper-then-relog path) or a key outside
+  the rotation window; a half-signed receipt (signature without key id,
+  or the reverse) is refused too.
+- `AuditLog.verify_export_json` parses with duplicate member names
+  refused at every level (`json.loads` keeps only the last value of a
+  repeated name, so a document that could verify here might read
+  differently in a first-wins consumer) and reports invalid JSON as
+  `ReceiptSignatureError`, not `JSONDecodeError`. Non-string key ids and
+  content that cannot be canonically re-encoded also refuse as
+  `ReceiptSignatureError` instead of raising `TypeError`.
+- Receipt content is bounded: `metadata`, `proof_steps` and `violations`
+  may nest at most 32 containers deep (`MAX_NESTING_DEPTH`), and deeper
+  content is refused when it is logged (`ValueError`). The bound is fixed
+  rather than taken from Python's recursion limit, which depends on how
+  deep the stack already is, so signing, verification and export cannot
+  overflow on content that was accepted.
+- `AuditLog.log` refuses, with or without a signer, content that cannot be
+  canonically JSON-encoded. Unsupported values, colliding keys and an
+  `engine_used` or `status` that is not an enum member raise `TypeError`;
+  before, such a receipt was accepted and `export_json()` failed later.
+  NaN and Infinity raise `ValueError`: this is a behaviour change, since
+  `export_json()` used to emit them as `NaN`/`Infinity` tokens, which are
+  not JSON (RFC 8259); strict parsers reject them, though Python's `json`
+  module accepts them by default. With a signer configured, a receipt that
+  already carries a signature or a key id raises `ReceiptSignatureError`
+  for the same content instead; an intact signed receipt is verified and
+  re-signed as before.
+- `AuditLog.verify_export_json` refuses nesting past the parser's
+  recursion limit as `ReceiptSignatureError`, not `RecursionError`. On
+  Python with the integer-digit limit (3.10.7 and later), an integer
+  literal past the limit is refused as `ReceiptSignatureError`, not
+  `ValueError`, and such an integer cannot be logged in the first place
+  (`log()` raises `ValueError`, or `ReceiptSignatureError` for a receipt
+  carrying signature state when a signer is configured, as above). On
+  3.10.0–3.10.6 there is no limit: a long literal in a tampered export is
+  refused by the schema and signature checks, and a genuinely signed
+  export containing one verifies.
+
 ### Fixed
 
 - `price_option` rejects anything other than exactly `call` or `put`,

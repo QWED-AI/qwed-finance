@@ -5,13 +5,25 @@ from .receipt import (
     VerificationEngine,
     VerificationStatus,
     ReceiptGenerator,
-    AuditLog
+    AuditLog,
+    RECEIPT_CONTENT_FIELDS,
+)
+from .signing import (
+    ReceiptSigner,
+    ReceiptSignatureError,
+    SigningKeyError,
+    parse_key_material,
 )
 
 __all__ = [
     "VerificationReceipt",
-    "VerificationEngine", 
+    "VerificationEngine",
     "VerificationStatus",
     "ReceiptGenerator",
-    "AuditLog"
+    "AuditLog",
+    "RECEIPT_CONTENT_FIELDS",
+    "ReceiptSigner",
+    "ReceiptSignatureError",
+    "SigningKeyError",
+    "parse_key_material",
 ]
