@@ -5,10 +5,9 @@ Deterministic verification for YTM, Duration, Convexity calculations
 All financial math uses Decimal for exact arithmetic.
 """
 
-import sys
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, ROUND_HALF_UP, getcontext
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 from enum import Enum
 
 from ._numeric import (
@@ -31,36 +30,29 @@ _ZERO = Decimal("0")
 # amount of work, and one large enough overflows the period count.
 MAX_COUPON_PERIODS = 1200
 
-# How close a period count from a float maturity must be to a whole number
-# to count as one, at least. str() of a float keeps about 17 significant
-# digits, so 2/12 years becomes 0.16666666666666666 and 12 periods of it
-# 1.99...92; the error stays below 1e-12 for every count up to
-# MAX_COUPON_PERIODS, far under any fraction of a period that means
-# something. A lower-precision binary float (NumPy's float32, float16) has a
-# larger error, so the tolerance grows with the type's machine epsilon.
-_FLOAT_PERIOD_SNAP = Decimal("1e-9")
-
 # Price residual, relative to the bond's price, at which the yield solver
 # counts as converged. An absolute residual (it was 1e-10) let a bond with
 # a tiny face value converge at any yield: every price is within 1e-10.
 _PRICE_RESIDUAL = Decimal("1e-13")
 
 
-def _binary_float_epsilon(value: Any) -> Optional[Decimal]:
-    """Machine epsilon of a binary float's type, or None for exact values.
+def _binary_float_type(value: Any) -> Optional[Callable[[float], Any]]:
+    """The binary float type of a maturity, or None for an exact value.
 
-    A Python float (and NumPy's float64, a float subclass) has the double
-    epsilon; another NumPy floating scalar has its own (float32 about
-    1.2e-7, float16 about 9.8e-4). int, Decimal and integral types are
-    exact and get None, so they are never snapped.
+    A Python float (and NumPy's float64, a float subclass) reads back as
+    float; another NumPy floating scalar as its own type (float32, float16).
+    int, Decimal and integral types are exact and get None, so their period
+    count is never snapped. Only these known types are called: a caller's
+    own numbers.Real is not.
     """
     if isinstance(value, float):
-        return Decimal(str(sys.float_info.epsilon))
-    dtype = getattr(value, "dtype", None)
-    if getattr(dtype, "kind", None) == "f":
+        return float
+    try:
         import numpy
-
-        return Decimal(str(float(numpy.finfo(dtype).eps)))
+    except ImportError:  # pragma: no cover - numpy ships with pandas
+        return None
+    if isinstance(value, numpy.floating):
+        return type(value)
     return None
 
 
@@ -548,28 +540,36 @@ class BondGuard:
         Counted in Decimal from the validated maturity, so a finite maturity
         cannot overflow the count (``1e308 * 2`` is infinity in float). A
         float maturity carries representation error — 2/12 years is
-        0.16666666666666666, and 12 periods of it 1.99...92 — so a count
-        from a float within _FLOAT_PERIOD_SNAP of a whole number is that
-        number: 2/12 is two monthly periods and 0.57 * 100 is 57. A Decimal
-        or int maturity is exact and never snapped. A maturity shorter than
-        one period truncates to zero periods, which leaves nothing to price:
-        pricing the stub of a partial period is #119, and until then such a
-        bond is refused rather than verified against an empty sum.
+        0.16666666666666666, and 12 periods of it 1.99...92. So when the
+        count is not whole, the nearest whole count is taken only if that
+        many periods, as a maturity in the input's own float type, *is* the
+        input — 2/12 is two monthly periods, and np.float32(5/6) at six a
+        year is five — and no neighbouring count is too, which would make
+        the schedule ambiguous. A float that is a genuine fraction of a
+        period, such as np.float16(8.3125) years (99.75 monthly periods),
+        is truncated, not rounded up. A Decimal or int maturity is exact and
+        never snapped. A maturity shorter than one period truncates to zero
+        periods, which leaves nothing to price: pricing the stub of a
+        partial period is #119, and until then such a bond is refused rather
+        than verified against an empty sum.
         """
         periods = years * frequency
-        epsilon = _binary_float_epsilon(raw_years)
-        if epsilon is not None:
+        read = _binary_float_type(raw_years)
+        if read is not None:
             nearest = periods.to_integral_value(rounding=ROUND_HALF_EVEN)
-            # str() of a binary float is off by at most about half an epsilon
-            # relative; four epsilons of the count leave room for that.
-            tolerance = max(_FLOAT_PERIOD_SNAP, nearest * epsilon * 4)
-            if periods != nearest and tolerance >= Decimal("0.5"):
-                # The float cannot tell neighbouring counts apart (float16
-                # beyond about 127 periods); rounding would pick one.
-                raise UnverifiableError(
-                    "maturity is too imprecise to count coupon periods"
-                )
-            if abs(periods - nearest) <= tolerance:
+
+            def is_input(count: Decimal) -> bool:
+                # That many periods as a maturity, rounded to the input's
+                # own float type, compared with the input itself.
+                return count > 0 and read(float(count / frequency)) == raw_years
+
+            if periods != nearest and is_input(nearest):
+                if is_input(nearest - 1) or is_input(nearest + 1):
+                    # The float cannot tell neighbouring counts apart;
+                    # rounding would pick one of them.
+                    raise UnverifiableError(
+                        "maturity is too imprecise to count coupon periods"
+                    )
                 periods = nearest
         if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(

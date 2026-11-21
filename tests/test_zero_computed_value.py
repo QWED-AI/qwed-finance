@@ -29,6 +29,13 @@ except ImportError:  # pragma: no cover - numpy ships with pandas
 # Only the NumPy tests skip without NumPy; the rest of the module still runs.
 needs_numpy = pytest.mark.skipif(np is None, reason="numpy is not installed")
 
+# NumPy float types by name, looked up explicitly rather than by getattr.
+NUMPY_FLOATS = (
+    {}
+    if np is None
+    else {"float16": np.float16, "float32": np.float32, "float64": np.float64}
+)
+
 R = RiskGuard()
 B = BondGuard()
 
@@ -766,7 +773,7 @@ def test_numpy_float_maturities_count_whole_periods(dtype, months, frequency, pe
     """str(np.float32(5/6)) is 0.8333333, and six periods of it 4.9999998:
     the snap tolerance follows the type's machine epsilon. main truncated
     the float32 case to four periods too."""
-    years = getattr(np, dtype)(months / frequency)
+    years = NUMPY_FLOATS[dtype](months / frequency)
     result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
     assert result.details["periods"] == periods
 
@@ -778,7 +785,7 @@ def test_numpy_float_fractional_periods_still_truncate(
     dtype, years, frequency, periods
 ):
     result = B.verify_ytm(
-        1000, 0.05, 999, getattr(np, dtype)(years), "5%", frequency=frequency
+        1000, 0.05, 999, NUMPY_FLOATS[dtype](years), "5%", frequency=frequency
     )
     assert result.details["periods"] == periods
 
@@ -791,11 +798,39 @@ def test_an_exact_low_precision_maturity_is_counted():
 
 
 @needs_numpy
-def test_a_maturity_too_imprecise_to_count_is_refused():
-    """float16 cannot tell 361 periods from its neighbours: refused, not rounded."""
-    result = B.verify_ytm(1000, 0.05, 999, np.float16(30.1), "5%", frequency=12)
+def test_a_float_that_is_two_counts_at_once_is_refused():
+    """At 1,028 coupons a year, float16 1.125 years is the maturity of both
+    1,156 and 1,157 periods: the schedule is ambiguous, so it is refused."""
+    years = NUMPY_FLOATS["float16"](1.125)
+    result = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=1028)
     assert refused(result)
     assert "too imprecise" in result.computed_value
+
+
+@needs_numpy
+def test_a_genuine_fraction_of_a_period_is_truncated_not_rounded_up():
+    """float16 8.3125 years is exact and 99.75 monthly periods. A tolerance of
+    four epsilons rounded it up to 100 and verified the 100-period convexity;
+    it is 99 periods, because 100 periods is not this float."""
+    years = NUMPY_FLOATS["float16"](8.3125)
+    assert (
+        B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=12).details["periods"]
+        == 99
+    )
+    assert B.verify_convexity(1000, 0, 0, years, "68.75", frequency=12).verified is True
+    assert (
+        B.verify_convexity(1000, 0, 0, years, "70.1389", frequency=12).verified is False
+    )
+
+
+@needs_numpy
+def test_a_low_precision_float_equal_to_a_whole_count_is_counted():
+    """float16 30.1 is float16 361/12 exactly, and no other count is."""
+    years = NUMPY_FLOATS["float16"](30.1)
+    assert (
+        B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=12).details["periods"]
+        == 361
+    )
 
 
 @pytest.mark.parametrize(
