@@ -1207,24 +1207,29 @@ def test_nesting_depth_counts_containers_only(value, expected):
 
 def test_nesting_depth_memory_does_not_grow_with_width():
     """One iterator per open container: a list of a million scalars costs
-    one iterator, not one stack entry per element."""
+    one iterator, not one stack entry per element.
+
+    The test measures only when it owns tracemalloc outright. If the runner
+    is already tracing (PYTHONTRACEMALLOC), measuring would mean resetting
+    the runner's peak or stopping its tracing, so the test skips instead and
+    leaves the runner's traces and peak untouched.
+    """
     import tracemalloc
 
     from qwed_finance.models.receipt import _nesting_depth
 
+    if tracemalloc.is_tracing():
+        pytest.skip("the runner owns tracemalloc; measuring would reset its peak")
+
     wide = [{"tags": list(range(1_000_000))}]
-    started_here = not tracemalloc.is_tracing()
-    if started_here:
-        tracemalloc.start()
+    tracemalloc.start()
     try:
-        baseline, _ = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        assert _nesting_depth(wide) == 3
+        depth = _nesting_depth(wide)
         _, peak = tracemalloc.get_traced_memory()
     finally:
-        if started_here:
-            tracemalloc.stop()
-    assert peak - baseline < 64 * 1024
+        tracemalloc.stop()
+    assert depth == 3
+    assert peak < 64 * 1024
 
 
 def test_wide_shallow_metadata_logs_and_exports():
