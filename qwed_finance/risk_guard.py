@@ -7,10 +7,10 @@ All financial math uses Decimal for exact arithmetic.
 
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, InvalidOperation, ROUND_HALF_UP, getcontext
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional
 from enum import Enum
 
-from ._numeric import UnverifiableError, claim, number, within_tolerance
+from ._numeric import UnverifiableError, claim, number, shown, within_tolerance
 
 # Set precision high enough for statistical calculations
 getcontext().prec = 50
@@ -323,7 +323,7 @@ class RiskGuard:
             # verifier must never raise on caller input.
             return RiskResult(
                 verified=False,
-                llm_value=str(llm_sortino),
+                llm_value=shown(llm_sortino),
                 computed_value="UNVERIFIABLE (unparseable claim)",
                 formula_used=self.SORTINO_FORMULA
             )
@@ -333,7 +333,7 @@ class RiskGuard:
             # instead of verdicting. Reject up front (Greptile P1).
             return RiskResult(
                 verified=False,
-                llm_value=str(llm_sortino),
+                llm_value=shown(llm_sortino),
                 computed_value="UNVERIFIABLE (non-finite claim)",
                 formula_used=self.SORTINO_FORMULA
             )
@@ -344,7 +344,7 @@ class RiskGuard:
             # Sortino here would endorse literally any number.
             return RiskResult(
                 verified=False,
-                llm_value=llm_sortino,
+                llm_value=shown(llm_sortino),
                 computed_value="UNVERIFIABLE (no downside observations)",
                 formula_used=self.SORTINO_FORMULA
             )
@@ -488,8 +488,13 @@ class RiskGuard:
             # Losses are positive amounts here, as verify_var reports VaR; a
             # negative average tail "loss" is a gain this formula does not
             # cover (#98).
+            number(portfolio_value, "portfolio_value", minimum=_ZERO)
             computed_es = number(tail_loss_avg, "tail_loss_avg", minimum=_ZERO)
             var_d = number(var_amount, "var_amount", minimum=_ZERO)
+            if computed_es < var_d:
+                # The tail average is taken over losses beyond VaR, so it
+                # cannot be below VaR; such inputs describe no distribution.
+                raise UnverifiableError("tail_loss_avg must be >= var_amount")
 
             # ES is simply the average of tail losses
             computed_es = computed_es.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -578,7 +583,7 @@ class RiskGuard:
         """A verdict for an input or claim the guard cannot verify (#98)."""
         return RiskResult(
             verified=False,
-            llm_value=str(raw_claim),
+            llm_value=shown(raw_claim),
             computed_value=f"UNVERIFIABLE ({reason})",
             formula_used=formula,
         )

@@ -97,3 +97,22 @@ def positive_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise UnverifiableError(f"{name} must be a positive integer")
     return value
+
+
+# Longest refused claim echoed back in a result.
+MAX_SHOWN_CLAIM = 80
+
+
+def shown(raw: Any) -> str:
+    """A refused claim as it may be echoed back in a result: one line, short.
+
+    A refused claim is untrusted text, and callers print results — the
+    GitHub Action writes them to its log, where a line starting with ``::``
+    is a workflow command. repr() escapes every line break and other
+    non-printable character, so the echo is always a single line; it is
+    then cut to MAX_SHOWN_CLAIM characters.
+    """
+    text = repr(raw)
+    if len(text) > MAX_SHOWN_CLAIM:
+        text = text[: MAX_SHOWN_CLAIM - 3] + "..."
+    return text

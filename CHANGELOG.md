@@ -22,16 +22,23 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 - The same four methods refuse inputs their formula cannot evaluate, as
   `verified=False` with an `UNVERIFIABLE (reason)` computed value, instead
   of verifying or raising: NaN, Infinity, `bool` and non-numeric inputs; a
-  negative portfolio value, volatility or tail loss; a holding period at or
-  below zero; a confidence level outside (0, 1); a face value or price at
-  or below zero, a negative coupon rate, a maturity at or below zero or
-  shorter than one coupon period; a `frequency` that is not a positive
-  integer (`2.0` is refused); and a yield at which the discount factor
-  `1 + y/frequency` is at or below zero. A maturity shorter than one
-  coupon period is refused rather than priced; pricing the stub is #119.
+  negative portfolio value, volatility, VaR amount or tail loss; a tail
+  loss average below the VaR amount, which no distribution has; a holding
+  period at or below zero; a confidence level outside (0, 1); a face value
+  or price at or below zero, a negative coupon rate, a maturity at or
+  below zero, shorter than one coupon period or longer than 1,200 coupon
+  periods (100 years of monthly coupons); a `frequency` that is not a
+  positive integer (`2.0` is refused); and a yield at which the discount
+  factor `1 + y/frequency` is at or below zero. A maturity shorter than
+  one coupon period is refused rather than priced; pricing the stub is
+  #119. The coupon-period count is taken in Decimal, so a float maturity
+  is no longer truncated by rounding (`0.57 * 100` read as 56 periods).
 - Claims those methods cannot read — not a string, unparseable, NaN or
   Infinity, or too large to compare — are refused the same way instead of
-  raising `InvalidOperation`.
+  raising `InvalidOperation`. A refused claim is echoed in `llm_value` as
+  one escaped line of at most 80 characters, never as raw text, so a
+  claim carrying a line break cannot write a workflow command into the
+  GitHub Action's log. `verify_sortino_ratio`'s refusals echo the same way.
 
 ### Added
 

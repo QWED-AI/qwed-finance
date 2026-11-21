@@ -7,15 +7,28 @@ All financial math uses Decimal for exact arithmetic.
 
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, getcontext
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 from enum import Enum
 
-from ._numeric import UnverifiableError, claim, number, positive_int, within_tolerance
+from ._numeric import (
+    UnverifiableError,
+    claim,
+    number,
+    positive_int,
+    shown,
+    within_tolerance,
+)
 
 # Set precision high enough for Newton-Raphson convergence
 getcontext().prec = 50
 
 _ZERO = Decimal("0")
+
+# Most coupon periods priced: 100 years of monthly coupons, the longest
+# schedule in normal issuance (century bonds). The solver loops over every
+# period on each iteration, so an unbounded maturity is an unbounded
+# amount of work, and one large enough overflows the period count.
+MAX_COUPON_PERIODS = 1200
 
 
 class DayCountConvention(Enum):
@@ -100,12 +113,14 @@ class BondGuard:
             fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
             cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
             p = number(price, "price", minimum=_ZERO, exclusive=True)
-            number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
+            years = number(
+                years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True
+            )
             frequency = positive_int(frequency, "frequency")
             freq = Decimal(frequency)
 
             # Calculate periodic values
-            n_periods = self._coupon_periods(years_to_maturity, frequency)
+            n_periods = self._coupon_periods(years, frequency)
             coupon_payment = (fv * cr) / freq
 
             # Newton-Raphson to find YTM
@@ -326,12 +341,14 @@ class BondGuard:
         fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
         cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
         y = number(ytm, "ytm")
-        number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
+        years = number(
+            years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True
+        )
         frequency = positive_int(frequency, "frequency")
         freq = Decimal(frequency)
 
         # Calculate convexity
-        n_periods = self._coupon_periods(years_to_maturity, frequency)
+        n_periods = self._coupon_periods(years, frequency)
         coupon_payment = (fv * cr) / freq
         periodic_rate = y / freq
         if 1 + periodic_rate <= 0:
@@ -453,15 +470,23 @@ class BondGuard:
         )
     
     @staticmethod
-    def _coupon_periods(years_to_maturity: Any, frequency: int) -> int:
-        """Whole coupon periods to maturity; at least one, or UnverifiableError.
+    def _coupon_periods(years: Decimal, frequency: int) -> int:
+        """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
 
-        A maturity shorter than one period truncates to zero periods, which
-        leaves nothing to price. Pricing the stub of a partial period is
-        #119; until then such a bond is refused rather than verified against
-        an empty sum.
+        Counted in Decimal from the validated maturity, so a finite maturity
+        can neither overflow the count (``1e308 * 2`` is infinity in float)
+        nor be truncated by float rounding (``0.57 * 100`` is 56.99... in
+        float). A maturity shorter than one period truncates to zero periods,
+        which leaves nothing to price: pricing the stub of a partial period
+        is #119, and until then such a bond is refused rather than verified
+        against an empty sum.
         """
-        n_periods = int(years_to_maturity * frequency)
+        periods = years * frequency
+        if periods > MAX_COUPON_PERIODS:
+            raise UnverifiableError(
+                f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
+            )
+        n_periods = int(periods)
         if n_periods < 1:
             raise UnverifiableError("maturity is shorter than one coupon period")
         return n_periods
@@ -471,7 +496,7 @@ class BondGuard:
         """A verdict for an input or claim the guard cannot verify (#98)."""
         return BondResult(
             verified=False,
-            llm_value=str(raw_claim),
+            llm_value=shown(raw_claim),
             computed_value=f"UNVERIFIABLE ({reason})",
             formula_used=formula,
         )

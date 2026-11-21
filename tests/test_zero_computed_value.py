@@ -85,9 +85,7 @@ def test_zero_var_from_a_zero_portfolio():
     [("$0.00", True), ("$0.004", True), ("$0.005", False), ("$999,999", False)],
 )
 def test_zero_expected_shortfall_compares_absolutely(claimed, expected):
-    assert (
-        R.verify_expected_shortfall(1_000_000, 32900, 0, claimed).verified is expected
-    )
+    assert R.verify_expected_shortfall(1_000_000, 0, 0, claimed).verified is expected
 
 
 def test_refused_zero_claim_reports_an_absolute_difference():
@@ -107,6 +105,7 @@ def test_refused_zero_claim_reports_an_absolute_difference():
         lambda: R.verify_expected_shortfall(1_000_000, 32900, 45000, "$45,000"),
         lambda: B.verify_ytm(1000, 0.05, 950, 10, "5.66%"),
         lambda: B.verify_ytm(1000, 0.0, 613.91, 10, "4.94%"),
+        lambda: B.verify_ytm(1000, 0.0, 1000, 10, "0%"),
         lambda: B.verify_convexity(1000, 0.05, 0.06, 10, "71.7854"),
         lambda: B.verify_convexity(1000, 0.0, 0.06, 5, "25.9214"),
         lambda: B.verify_convexity(1000, 0.05, 0.06, 0.5, "0.4713"),
@@ -117,6 +116,7 @@ def test_refused_zero_claim_reports_an_absolute_difference():
         "es",
         "ytm",
         "ytm-zero-coupon",
+        "ytm-zero-coupon-at-par",
         "convexity",
         "convexity-zero-coupon",
         "convexity-one-period",
@@ -191,7 +191,7 @@ def test_var_refuses_inputs_outside_the_formula(position, value):
 
 
 @pytest.mark.parametrize("bad", BAD_NUMBERS + [-100, -0.01])
-@pytest.mark.parametrize("position", ["var_amount", "tail_loss_avg"])
+@pytest.mark.parametrize("position", ["portfolio_value", "var_amount", "tail_loss_avg"])
 def test_expected_shortfall_refuses_bad_inputs(position, bad):
     args = dict(
         portfolio_value=1_000_000, var_amount=32900, tail_loss_avg=45000, llm_es="$5"
@@ -279,7 +279,7 @@ BAD_CLAIMS = ["NaN", "-NaN", "sNaN", "Infinity", "-Infinity", "inf", "lots", "",
     [
         lambda c: R.verify_var(1_000_000, 0.02, 0.95, 1, c),
         lambda c: R.verify_var(1_000_000, 0, 0.95, 1, c),
-        lambda c: R.verify_expected_shortfall(1_000_000, 32900, 0, c),
+        lambda c: R.verify_expected_shortfall(1_000_000, 0, 0, c),
         lambda c: B.verify_ytm(1000, 0.05, 950, 10, c),
         lambda c: B.verify_convexity(1000, 0.05, 0.06, 10, c),
     ],
@@ -306,7 +306,8 @@ def test_within_tolerance_scales_by_the_absolute_value():
     verified, pct = within_tolerance(
         Decimal("-100"), Decimal("-100.5"), Decimal("1"), Decimal("0.01")
     )
-    assert verified is True and pct == Decimal("0.5")
+    assert verified is True
+    assert pct == Decimal("0.5")
     verified, _ = within_tolerance(
         Decimal("-100"), Decimal("100"), Decimal("1"), Decimal("0.01")
     )
@@ -377,9 +378,10 @@ def test_number_handles_integers_past_the_digit_limit():
 
 
 def test_bond_difference_is_absolute_when_the_computed_value_is_zero():
-    """No bond reaches a zero computed value today: convexity is positive
-    with at least one coupon period, and the solver's lower bound keeps a
-    yield positive (#100). The absolute report is pinned for when it can."""
+    """The absolute report pinned at the helper. Through the public API a
+    zero yield comes from a zero-coupon bond priced at par, which never
+    reaches the solver's lower bound (#100); convexity with at least one
+    coupon period is always positive."""
     report = BondGuard._difference(
         None, Decimal("0"), Decimal("1.23456"), False, Decimal("0.0001"), "%"
     )
@@ -390,3 +392,117 @@ def test_bond_difference_is_absolute_when_the_computed_value_is_zero():
         )
         is None
     )
+
+
+# -- a zero-coupon bond at par: any claim verified on main ---------------------
+
+
+@pytest.mark.parametrize(
+    "claimed, expected",
+    [
+        ("0%", True),
+        ("0.0000%", True),
+        ("0", True),
+        ("0.00005%", False),
+        ("25%", False),
+        ("999%", False),
+    ],
+)
+def test_zero_yield_at_par_compares_absolutely(claimed, expected):
+    """At par a zero-coupon bond yields exactly 0, which the solver returns
+    before its lower bound applies. main skipped the comparison and verified
+    every claim, 999 % included."""
+    result = B.verify_ytm(1000, 0.0, 1000, 10, claimed)
+    assert result.computed_value == "0.0000%"
+    assert result.verified is expected
+
+
+# -- expected shortfall cannot be below VaR -------------------------------------
+
+
+@pytest.mark.parametrize(
+    "var_amount, tail_loss_avg, verifies",
+    [
+        (32900, 0, False),
+        (32900, 32899.99, False),
+        (32900, 32900, True),
+        (32900, 45000, True),
+        (0, 0, True),
+    ],
+)
+def test_expected_shortfall_below_var_is_refused(var_amount, tail_loss_avg, verifies):
+    claimed = f"${tail_loss_avg:,.2f}"
+    result = R.verify_expected_shortfall(1_000_000, var_amount, tail_loss_avg, claimed)
+    assert result.verified is verifies
+    if not verifies:
+        assert refused(result)
+
+
+# -- coupon periods: bounded, and counted exactly -------------------------------
+
+
+@pytest.mark.parametrize("call", ["ytm", "convexity"])
+@pytest.mark.parametrize("years", [1e308, 1e18, 100.1])
+def test_maturity_past_the_period_bound_is_refused(call, years):
+    """1e308 overflowed the float period count and raised OverflowError; a
+    large finite maturity was an unbounded amount of solver work."""
+    if call == "ytm":
+        result = B.verify_ytm(1000, 0.05, 950, years, "5%", frequency=12)
+    else:
+        result = B.verify_convexity(1000, 0.05, 0.06, years, "5", frequency=12)
+    assert refused(result)
+    assert "1200 coupon periods" in result.computed_value
+
+
+def test_maturity_at_the_period_bound_is_computed():
+    result = B.verify_ytm(1000, 0.05, 950, 100, "5.2646%", frequency=12)
+    assert result.verified is True
+    assert result.details["periods"] == 1200
+
+
+def test_coupon_periods_are_not_truncated_by_float_rounding():
+    """0.57 * 100 is 56.99... in float; the count is taken in Decimal."""
+    result = B.verify_ytm(1000, 0.05, 950, 0.57, "999%", frequency=100)
+    assert result.details["periods"] == 57
+
+
+# -- a refused claim is echoed as one escaped line --------------------------------
+
+HOSTILE_CLAIMS = [
+    "5\n::warning::injected",
+    "5\r\n::error::injected",
+    "5\r::set-output name=x::y",
+    "5\u2028::warning::line separator",
+    "5\x85::warning::next line",
+    "5\x1b[31mred",
+    "x" * 5000,
+]
+
+
+@pytest.mark.parametrize("hostile", HOSTILE_CLAIMS)
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: R.verify_var(1_000_000, 0.02, 0.95, 1, c),
+        lambda c: R.verify_expected_shortfall(1_000_000, 32900, 45000, c),
+        lambda c: R.verify_sortino_ratio(0.1, 0.0, [-0.1, 0.05], c),
+        lambda c: B.verify_ytm(1000, 0.05, 950, 10, c),
+        lambda c: B.verify_convexity(1000, 0.05, 0.06, 10, c),
+    ],
+    ids=["var", "es", "sortino", "ytm", "convexity"],
+)
+def test_refused_claims_are_echoed_on_one_short_line(call, hostile):
+    """Callers print results; the GitHub Action writes them to its log, where
+    a line starting with :: is a workflow command."""
+    result = call(hostile)
+    assert result.verified is False
+    assert result.llm_value.isprintable()
+    assert len(result.llm_value) <= 80
+
+
+def test_shown_keeps_short_printable_claims_readable():
+    from qwed_finance._numeric import shown
+
+    assert shown("lots") == "'lots'"
+    assert shown(None) == "None"
+    assert shown("5\n::x") == "'5\\n::x'"
