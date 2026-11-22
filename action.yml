@@ -43,7 +43,9 @@ outputs:
   computed_value:
     description: 'QWED computed value'
   errors_count:
-    description: 'Number of verification errors (for scan modes)'
+    description: 'Rows that failed in scan modes: mismatches, rows skipped for missing columns, and rows that could not be parsed or verified (1 for a file with no rows)'
+  verified_count:
+    description: 'Rows verified in scan modes; the scan passes only when every row is verified and there is at least one'
   badge_url:
     description: 'QWED verified badge URL'
   sarif_file:

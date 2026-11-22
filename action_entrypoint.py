@@ -78,13 +78,20 @@ def generate_sarif(findings: list, repo: str, version: str | None = None) -> dic
                             "shortDescription": {"text": "LLM financial calculation mismatch"},
                             "fullDescription": {"text": "The LLM output differs from the mathematically proven value."},
                             "defaultConfiguration": {"level": "error"}
+                        },
+                        {
+                            "id": "QWED-FIN-002",
+                            "name": "RowNotVerified",
+                            "shortDescription": {"text": "Row could not be verified"},
+                            "fullDescription": {"text": "The row was skipped or could not be parsed or verified, so nothing about it was proven."},
+                            "defaultConfiguration": {"level": "error"}
                         }
                     ]
                 }
             },
             "results": [
                 {
-                    "ruleId": "QWED-FIN-001",
+                    "ruleId": f.get("rule_id", "QWED-FIN-001"),
                     "level": "error",
                     "message": {"text": f.get("message", "Verification failed")},
                     "locations": [{
@@ -219,6 +226,84 @@ def action_verify():
         sys.exit(1)
 
 
+def _shown(text: str) -> str:
+    """Row text as it may be printed to the Actions log: one escaped line."""
+    from qwed_finance._numeric import shown
+
+    return shown(text)
+
+
+def _cell(row, column: str):
+    """A required or present cell; blank or NaN is an error, never a default."""
+    import pandas as pd
+
+    value = row[column]
+    if pd.isna(value) or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"{column} is empty or NaN")
+    return value
+
+
+def _optional(row, column: str, optional: dict):
+    """A column absent from the file uses its documented default; a present
+    but blank cell is an error for the row."""
+    if column not in row.index:
+        return optional[column]
+    return _cell(row, column)
+
+
+def _npv_row(verifier, row, optional):
+    cashflows = [float(x) for x in str(_cell(row, "cashflows")).split(",")]
+    rate = float(_optional(row, "rate", optional))
+    return verifier.verify_npv(cashflows, rate, str(_cell(row, "llm_npv")))
+
+
+def _bond_row(guard, row, optional):
+    return guard.verify_ytm(
+        float(_cell(row, "face_value")),
+        float(_optional(row, "coupon_rate", optional)),
+        float(_optional(row, "price", optional)),
+        float(_optional(row, "years", optional)),
+        str(_cell(row, "llm_ytm")),
+    )
+
+
+def _fx_row(guard, row, optional):
+    return guard.verify_forward_rate(
+        float(_cell(row, "spot_rate")),
+        float(_optional(row, "domestic_rate", optional)),
+        float(_optional(row, "foreign_rate", optional)),
+        int(_optional(row, "days", optional)),
+        str(_cell(row, "llm_forward")),
+    )
+
+
+def _risk_row(guard, row, optional):
+    return guard.verify_var(
+        float(_cell(row, "portfolio_value")),
+        float(_optional(row, "volatility", optional)),
+        float(_optional(row, "confidence", optional)),
+        int(_optional(row, "holding_days", optional)),
+        str(_cell(row, "llm_var")),
+    )
+
+
+# Each scan mode: the columns a row must have, the optional columns and their
+# documented defaults, and how a row is verified.
+SCAN_MODES = {
+    "scan-npv": {"label": "NPV", "guard": get_finance_verifier, "verify": _npv_row,
+                 "required": ("cashflows", "llm_npv"), "optional": {"rate": 0.1}},
+    "scan-bonds": {"label": "YTM", "guard": get_bond_guard, "verify": _bond_row,
+                   "required": ("face_value", "llm_ytm"),
+                   "optional": {"coupon_rate": 0.05, "price": 1000, "years": 10}},
+    "scan-fx": {"label": "Forward rate", "guard": get_fx_guard, "verify": _fx_row,
+                "required": ("spot_rate", "llm_forward"),
+                "optional": {"domestic_rate": 0.05, "foreign_rate": 0.02, "days": 90}},
+    "scan-risk": {"label": "VaR", "guard": get_risk_guard, "verify": _risk_row,
+                  "required": ("portfolio_value", "llm_var"),
+                  "optional": {"volatility": 0.02, "confidence": 0.95, "holding_days": 1}},
+}
+
+
 def action_scan_file(scan_type: str):
     """Scan a CSV/JSON file for financial calculation errors"""
     import pandas as pd
@@ -249,121 +334,77 @@ def action_scan_file(scan_type: str):
     else:
         df = pd.read_csv(data_file)
     
-    errors = []
     findings = []
-    
-    if scan_type == "scan-npv":
-        verifier = get_finance_verifier()
-        
-        for idx, row in df.iterrows():
-            if "cashflows" in row and "llm_npv" in row:
-                try:
-                    cashflows = [float(x) for x in str(row["cashflows"]).split(",")]
-                    rate = float(row.get("rate", 0.1))
-                    result = verifier.verify_npv(cashflows, rate, str(row["llm_npv"]))
-                    
-                    if not result.verified:
-                        errors.append(idx)
-                        findings.append({
-                            "file": data_file,
-                            "line": idx + 2,
-                            "message": f"NPV mismatch: LLM={result.llm_value}, Computed={result.computed_value}"
-                        })
-                        print(f"🛑 Row {idx}: NPV error - LLM: {result.llm_value}, QWED: {result.computed_value}")
-                except Exception as e:
-                    print(f"⚠️ Row {idx}: Error processing - {e}")
-    
-    elif scan_type == "scan-bonds":
-        guard = get_bond_guard()
-        
-        for idx, row in df.iterrows():
-            if "face_value" in row and "llm_ytm" in row:
-                try:
-                    result = guard.verify_ytm(
-                        float(row["face_value"]),
-                        float(row.get("coupon_rate", 0.05)),
-                        float(row.get("price", 1000)),
-                        float(row.get("years", 10)),
-                        str(row["llm_ytm"])
-                    )
-                    
-                    if not result.verified:
-                        errors.append(idx)
-                        findings.append({
-                            "file": data_file,
-                            "line": idx + 2,
-                            "message": f"YTM mismatch: LLM={result.llm_value}, Computed={result.computed_value}"
-                        })
-                        print(f"🛑 Row {idx}: YTM error - LLM: {result.llm_value}, QWED: {result.computed_value}")
-                except Exception as e:
-                    print(f"⚠️ Row {idx}: Error processing - {e}")
-    
-    elif scan_type == "scan-fx":
-        guard = get_fx_guard()
-        
-        for idx, row in df.iterrows():
-            if "spot_rate" in row and "llm_forward" in row:
-                try:
-                    result = guard.verify_forward_rate(
-                        float(row["spot_rate"]),
-                        float(row.get("domestic_rate", 0.05)),
-                        float(row.get("foreign_rate", 0.02)),
-                        int(row.get("days", 90)),
-                        str(row["llm_forward"])
-                    )
-                    
-                    if not result.verified:
-                        errors.append(idx)
-                        findings.append({
-                            "file": data_file,
-                            "line": idx + 2,
-                            "message": f"Forward rate mismatch: LLM={result.llm_value}, Computed={result.computed_value}"
-                        })
-                        print(f"🛑 Row {idx}: Forward rate error - LLM: {result.llm_value}, QWED: {result.computed_value}")
-                except Exception as e:
-                    print(f"⚠️ Row {idx}: Error processing - {e}")
-    
-    elif scan_type == "scan-risk":
-        guard = get_risk_guard()
-        
-        for idx, row in df.iterrows():
-            if "portfolio_value" in row and "llm_var" in row:
-                try:
-                    result = guard.verify_var(
-                        float(row["portfolio_value"]),
-                        float(row.get("volatility", 0.02)),
-                        float(row.get("confidence", 0.95)),
-                        int(row.get("holding_days", 1)),
-                        str(row["llm_var"])
-                    )
-                    
-                    if not result.verified:
-                        errors.append(idx)
-                        findings.append({
-                            "file": data_file,
-                            "line": idx + 2,
-                            "message": f"VaR mismatch: LLM={result.llm_value}, Computed={result.computed_value}"
-                        })
-                        print(f"🛑 Row {idx}: VaR error - LLM: {result.llm_value}, QWED: {result.computed_value}")
-                except Exception as e:
-                    print(f"⚠️ Row {idx}: Error processing - {e}")
-    
+    spec = SCAN_MODES[scan_type]
+    guard = spec["guard"]()
+    outcomes = {"verified": 0, "mismatch": 0, "skipped": 0, "error": 0}
+
+    def not_verified(idx, rule_id, message):
+        findings.append({
+            "file": data_file, "line": idx + 2, "rule_id": rule_id, "message": message,
+        })
+
+    # A required column missing from the file means no row can be checked:
+    # every row is skipped and counted as a failure, never as passed (#101).
+    missing = [c for c in spec["required"] if c not in df.columns]
+    if missing:
+        print(f"⚠️ Missing required column(s): {', '.join(missing)}; "
+              f"expected {', '.join(spec['required'])}")
+
+    # An optional column absent from the whole file keeps its documented
+    # default, and the summary says so. One present but blank in a row is an
+    # error for that row, never silently replaced by the default.
+    defaulted = [c for c in spec["optional"] if c not in df.columns]
+    for column in defaulted:
+        print(f"ℹ️ Column '{column}' not in file; default {spec['optional'][column]} used for every row")
+
+    for idx, row in df.iterrows():
+        if missing:
+            outcomes["skipped"] += 1
+            not_verified(idx, "QWED-FIN-002",
+                         f"Row skipped: missing column(s) {', '.join(missing)}")
+            continue
+        try:
+            result = spec["verify"](guard, row, spec["optional"])
+        except Exception as e:  # any parse or verification failure is a failed row
+            outcomes["error"] += 1
+            reason = f"{type(e).__name__}: {_shown(str(e))}"
+            not_verified(idx, "QWED-FIN-002", f"Row not verified: {reason}")
+            print(f"⚠️ Row {idx}: not verified - {reason}")
+            continue
+        if result.verified:
+            outcomes["verified"] += 1
+        else:
+            outcomes["mismatch"] += 1
+            label = spec["label"]
+            not_verified(idx, "QWED-FIN-001",
+                         f"{label} mismatch: LLM={result.llm_value}, Computed={result.computed_value}")
+            print(f"🛑 Row {idx}: {label} error - LLM: {result.llm_value}, QWED: {result.computed_value}")
+
     # Summary
     total = len(df)
-    error_count = len(errors)
-    
+    failed = outcomes["mismatch"] + outcomes["skipped"] + outcomes["error"]
+    if outcomes["verified"] == 0 and failed == 0:
+        # An empty file verified nothing: that is a failure, not a pass.
+        failed = 1
+        not_verified(-1, "QWED-FIN-002", "No rows to verify")
+    passed = failed == 0
+
     print(f"\n{'='*50}")
-    print(f"📊 Scan Complete: {total - error_count}/{total} rows passed")
-    
-    if error_count > 0:
-        print(f"❌ {error_count} errors found")
-    else:
+    print(f"📊 Scan Complete: {outcomes['verified']}/{total} rows verified "
+          f"({outcomes['mismatch']} mismatch, {outcomes['skipped']} skipped, {outcomes['error']} error)")
+    if passed:
         print("✅ All calculations verified!")
-    
+    elif outcomes["verified"] == 0:
+        print("❌ No rows were verified")
+    else:
+        print(f"❌ {failed} rows not verified")
+
     # Set outputs
-    set_output("errors_count", str(error_count))
-    set_output("badge_url", generate_badge_url(error_count == 0))
-    
+    set_output("errors_count", str(failed))
+    set_output("verified_count", str(outcomes["verified"]))
+    set_output("badge_url", generate_badge_url(passed))
+
     # SARIF output
     output_format = os.getenv("INPUT_OUTPUT_FORMAT", "text")
     if output_format == "sarif" and findings:
@@ -374,8 +415,8 @@ def action_scan_file(scan_type: str):
             json.dump(sarif, f, indent=2)
         set_output("sarif_file", sarif_path)
         print(f"📄 SARIF output: {sarif_path}")
-    
-    if error_count > 0 and os.getenv("INPUT_FAIL_ON_ERROR", "true").lower() == "true":
+
+    if not passed and os.getenv("INPUT_FAIL_ON_ERROR", "true").lower() == "true":
         sys.exit(1)
 
 
