@@ -145,7 +145,7 @@ class BondGuard:
             cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
             p = number(price, "price", minimum=_ZERO, exclusive=True)
             number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
-            frequency = positive_int(frequency, "frequency")
+            frequency = self._coupon_frequency(frequency)
             freq = Decimal(frequency)
 
             # Calculate periodic values
@@ -410,7 +410,7 @@ class BondGuard:
         cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
         y = number(ytm, "ytm")
         number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
-        frequency = positive_int(frequency, "frequency")
+        frequency = self._coupon_frequency(frequency)
         freq = Decimal(frequency)
 
         # Calculate convexity
@@ -536,6 +536,22 @@ class BondGuard:
         )
     
     @staticmethod
+    def _coupon_frequency(frequency: Any) -> int:
+        """Coupons a year: a whole number from 1 to MAX_COUPON_PERIODS.
+
+        No schedule within MAX_COUPON_PERIODS needs more coupons a year than
+        that, and a larger count cannot multiply a float maturity at all
+        (10**400 cannot become a float), so it is refused here, with its own
+        reason, before any period count is formed.
+        """
+        frequency = positive_int(frequency, "frequency")
+        if frequency > MAX_COUPON_PERIODS:
+            raise UnverifiableError(
+                f"frequency must be at most {MAX_COUPON_PERIODS} coupons a year"
+            )
+        return frequency
+
+    @staticmethod
     def _coupon_periods(years_to_maturity: Any, frequency: int) -> int:
         """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
 
@@ -550,14 +566,7 @@ class BondGuard:
         period, which truncates to zero periods and leaves nothing to price
         rather than an empty sum to verify against.
         """
-        try:
-            periods = _period_product(years_to_maturity, frequency)
-        except OverflowError:
-            # A float maturity times a frequency too large to be a float
-            # (10**400) cannot be formed at all; it is past any bound.
-            raise UnverifiableError(
-                f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
-            ) from None
+        periods = _period_product(years_to_maturity, frequency)
         if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(
                 f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"

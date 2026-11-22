@@ -41,8 +41,9 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   is refused like `bool`, and a `Fraction` is refused with a clear reason
   instead of raising, since its text (`"1/12"`) is not a number `Decimal`
   reads and converting it by division would round.
-  A frequency too large to multiply a float maturity by (`10**400`) is
-  refused as past the period bound instead of raising `OverflowError`.
+  A frequency above 1,200 coupons a year is refused, so one too large to
+  multiply a float maturity by (`10**400`) no longer raises
+  `OverflowError`.
 - `verify_ytm` refuses a claim when its yield solver runs out of
   iterations without pricing the bond, instead of comparing against
   wherever the solver stopped — typically its lower bound of 0.01 %,

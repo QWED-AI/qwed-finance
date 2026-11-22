@@ -978,4 +978,20 @@ def test_a_frequency_too_large_for_a_float_is_refused_not_raised(years):
     ):
         result = call(years())
         assert refused(result)
-        assert "longer than" in result.computed_value
+        assert "frequency must be at most 1200" in result.computed_value
+
+
+@pytest.mark.parametrize(
+    "frequency, refused_too", [(1200, False), (1201, True), (10**326, True)]
+)
+def test_frequency_is_bounded_with_its_own_reason(frequency, refused_too):
+    """5e-324 years at 10**326 a year is 500 periods: refused for its
+    frequency, not misreported as longer than 1,200 periods."""
+    result = B.verify_ytm(1000, 0.05, 999, 1, "5%", frequency=frequency)
+    if refused_too:
+        assert refused(result)
+        assert "frequency must be at most 1200" in result.computed_value
+    else:
+        assert result.details["periods"] == 1200
+    tiny = B.verify_ytm(1000, 0.05, 999, 5e-324, "5%", frequency=10**326)
+    assert "frequency must be at most 1200" in tiny.computed_value
