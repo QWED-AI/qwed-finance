@@ -5,13 +5,61 @@ Deterministic verification for YTM, Duration, Convexity calculations
 All financial math uses Decimal for exact arithmetic.
 """
 
+import numbers
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP, getcontext
-from typing import List, Optional, Tuple
+from decimal import Decimal, DecimalException, ROUND_HALF_UP, getcontext
+from typing import Any, Optional, Tuple
 from enum import Enum
+
+from ._numeric import (
+    UnverifiableError,
+    claim,
+    number,
+    positive_int,
+    shown,
+    within_tolerance,
+)
 
 # Set precision high enough for Newton-Raphson convergence
 getcontext().prec = 50
+
+_ZERO = Decimal("0")
+
+# Most coupon periods priced: 100 years of monthly coupons, the longest
+# schedule in normal issuance (century bonds). The solver loops over every
+# period on each iteration, so an unbounded maturity is an unbounded
+# amount of work, and one large enough overflows the period count.
+MAX_COUPON_PERIODS = 1200
+
+# Price residual, relative to the bond's price, at which the yield solver
+# counts as converged. An absolute residual (it was 1e-10) let a bond with
+# a tiny face value converge at any yield: every price is within 1e-10.
+_PRICE_RESIDUAL = Decimal("1e-13")
+
+
+def _period_product(years_to_maturity: Any, frequency: int) -> Any:
+    """years_to_maturity * frequency, the same on every NumPy version.
+
+    An integral maturity is multiplied as a Python int, so it cannot wrap:
+    under NumPy 2, np.int8(30) * 12 keeps int8 and wraps to 104. A NumPy
+    float is multiplied by the frequency in its own dtype, explicitly: NumPy
+    1 and 2 promote a scalar times a Python int differently (NEP 50), and a
+    fixed dtype gives one answer on both — main's answer on NumPy 2, where
+    np.float32(5/6) * 6 is exactly 5. A Python float or a Decimal is
+    multiplied in its own arithmetic, as main did. How a narrow float maps
+    onto its intended schedule is #119.
+    """
+    if isinstance(years_to_maturity, numbers.Integral):
+        return int(years_to_maturity) * frequency
+    try:
+        import numpy
+    except ImportError:  # pragma: no cover - numpy ships with pandas
+        return years_to_maturity * frequency
+    if isinstance(years_to_maturity, numpy.floating):
+        dtype = years_to_maturity.dtype.type
+        with numpy.errstate(over="ignore"):
+            return years_to_maturity * dtype(frequency)
+    return years_to_maturity * frequency
 
 
 class DayCountConvention(Enum):
@@ -43,6 +91,9 @@ class BondGuard:
     following the TradingGuard gold standard.
     """
     
+    YTM_FORMULA = "Newton-Raphson YTM Solver"
+    CONVEXITY_FORMULA = "Convexity = Σ(t(t+1) × PV(CFt)) / (P × (1+y)²)"
+
     def __init__(self, tolerance_pct: float = 0.5, max_iterations: int = 100):
         """
         Initialize the Bond Guard.
@@ -82,49 +133,67 @@ class BondGuard:
         Returns:
             BondResult with verification status
         """
-        # Parse LLM's YTM
-        llm_rate_d = self._parse_rate(llm_ytm)
-        
-        # Convert inputs to Decimal at the boundary
-        fv = Decimal(str(face_value))
-        cr = Decimal(str(coupon_rate))
-        p = Decimal(str(price))
-        freq = Decimal(str(frequency))
-        
-        # Calculate periodic values
-        n_periods = int(years_to_maturity * frequency)
-        coupon_payment = (fv * cr) / freq
-        
-        # Newton-Raphson to find YTM
-        computed_ytm = self._solve_ytm(
-            fv, coupon_payment, p, n_periods, frequency
-        )
-        
-        # Compare
-        if computed_ytm > 0:
-            diff_pct = abs(computed_ytm - llm_rate_d) / computed_ytm * 100
-        else:
-            diff_pct = Decimal("0")
-        verified = diff_pct <= self.tolerance_pct
-        
-        # Format output with quantized precision
-        computed_pct = (computed_ytm * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        llm_pct = (llm_rate_d * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        
-        return BondResult(
-            verified=verified,
-            llm_value=f"{llm_pct}%",
-            computed_value=f"{computed_pct}%",
-            difference=f"{diff_pct.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)}%" if not verified else None,
-            formula_used="Newton-Raphson YTM Solver",
-            details={
-                "face_value": str(fv),
-                "coupon_rate": f"{cr * 100}%",
-                "price": str(p),
-                "periods": n_periods,
-                "frequency": frequency
-            }
-        )
+        try:
+            # Parse LLM's YTM
+            llm_rate_d = claim(self._parse_rate, llm_ytm)
+
+            # Convert inputs to Decimal at the boundary. A bond with no face
+            # value, no price, no remaining life or no coupon period has no
+            # yield to solve for: the solver would return its starting guess,
+            # which any claim equal to that guess would match (#98).
+            fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
+            cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
+            p = number(price, "price", minimum=_ZERO, exclusive=True)
+            number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
+            frequency = self._coupon_frequency(frequency)
+            freq = Decimal(frequency)
+
+            # Calculate periodic values
+            n_periods = self._coupon_periods(years_to_maturity, frequency)
+            coupon_payment = (fv * cr) / freq
+
+            # Newton-Raphson to find YTM
+            computed_ytm, converged = self._solve_ytm_with_status(
+                fv, coupon_payment, p, n_periods, frequency
+            )
+            if not converged:
+                # The solver ran out of iterations without pricing the bond,
+                # typically stuck at a bound of its range: the value it
+                # returns is not the yield, and a claim equal to it must not
+                # verify (#98, #100).
+                raise UnverifiableError("yield solver did not converge")
+
+            # Compare. A rate is reported to 0.0001 %, i.e. 0.000001.
+            verified, diff_pct = within_tolerance(
+                computed_ytm, llm_rate_d, self.tolerance_pct, Decimal("0.000001")
+            )
+
+            # Format output with quantized precision
+            computed_pct = (computed_ytm * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            llm_pct = (llm_rate_d * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+            return BondResult(
+                verified=verified,
+                llm_value=f"{llm_pct}%",
+                computed_value=f"{computed_pct}%",
+                difference=self._difference(
+                    diff_pct, computed_pct, llm_pct, verified, Decimal("0.0001"), "%"
+                ),
+                formula_used=self.YTM_FORMULA,
+                details={
+                    "face_value": str(fv),
+                    "coupon_rate": f"{cr * 100}%",
+                    "price": str(p),
+                    "periods": n_periods,
+                    "frequency": frequency
+                }
+            )
+        except UnverifiableError as reason:
+            return self._unverifiable(llm_ytm, reason, self.YTM_FORMULA)
+        except DecimalException:
+            return self._unverifiable(
+                llm_ytm, "value outside verifiable range", self.YTM_FORMULA
+            )
     
     def _solve_ytm(
         self,
@@ -135,6 +204,27 @@ class BondGuard:
         frequency: int
     ) -> Decimal:
         """Newton-Raphson YTM solver using Decimal arithmetic."""
+        return self._solve_ytm_with_status(
+            face_value, coupon, price, n_periods, frequency
+        )[0]
+
+    def _solve_ytm_with_status(
+        self,
+        face_value: Decimal,
+        coupon: Decimal,
+        price: Decimal,
+        n_periods: int,
+        frequency: int
+    ) -> Tuple[Decimal, bool]:
+        """_solve_ytm, also reporting whether the solver converged.
+
+        Returns ``(ytm, converged)``. ``converged`` is True only when the
+        bond priced at ``ytm`` is within ``_PRICE_RESIDUAL`` of ``price``,
+        relative to the price, so a bond with a tiny face value is held to
+        the same precision as any other. Every candidate is checked,
+        including the one the last allowed step produced; when none meets
+        the residual, ``ytm`` is wherever the solver stopped.
+        """
         freq = Decimal(str(frequency))
         
         # Initial guess (current yield)
@@ -157,17 +247,29 @@ class BondGuard:
             
             # Newton step
             diff = bond_price - price
-            if abs(diff) < Decimal("1E-10"):
-                break
+            if abs(diff) <= price * _PRICE_RESIDUAL:
+                return ytm, True
             
-            if abs(dpv) > Decimal("1E-10"):
+            if dpv != 0:
                 ytm = ytm - diff / dpv
             
             # Keep YTM in a reasonable range for convergence
             # Upper bound 10.0 (1000%) supports distressed debt scenarios
             ytm = max(Decimal("0.0001"), min(ytm, Decimal("10")))
         
-        return ytm
+        # The last step's candidate has not been priced yet.
+        final_price = self._bond_price(face_value, coupon, ytm, n_periods, freq)
+        return ytm, abs(final_price - price) <= price * _PRICE_RESIDUAL
+
+    @staticmethod
+    def _bond_price(
+        face_value: Decimal, coupon: Decimal, ytm: Decimal, n_periods: int, freq: Decimal
+    ) -> Decimal:
+        """Price of the bond at ``ytm``: discounted coupons plus face value."""
+        pv_coupons = Decimal("0")
+        for t in range(1, n_periods + 1):
+            pv_coupons += coupon / ((1 + ytm / freq) ** t)
+        return pv_coupons + face_value / ((1 + ytm / freq) ** n_periods)
     
     def verify_duration(
         self,
@@ -275,19 +377,50 @@ class BondGuard:
         Returns:
             BondResult with verification status
         """
+        try:
+            return self._convexity(
+                face_value, coupon_rate, ytm, years_to_maturity, llm_convexity, frequency
+            )
+        except UnverifiableError as reason:
+            return self._unverifiable(llm_convexity, reason, self.CONVEXITY_FORMULA)
+        except DecimalException:
+            return self._unverifiable(
+                llm_convexity, "value outside verifiable range", self.CONVEXITY_FORMULA
+            )
+
+    def _convexity(
+        self,
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        years_to_maturity: float,
+        llm_convexity: str,
+        frequency: int,
+    ) -> BondResult:
+        """verify_convexity's computation; raises UnverifiableError on bad inputs."""
         # Parse LLM's convexity
-        llm_conv = Decimal(llm_convexity.replace("years²", "").strip())
-        
-        # Convert to Decimal
-        fv = Decimal(str(face_value))
-        cr = Decimal(str(coupon_rate))
-        y = Decimal(str(ytm))
-        freq = Decimal(str(frequency))
-        
+        llm_conv = claim(
+            lambda raw: Decimal(raw.replace("years²", "").strip()), llm_convexity
+        )
+
+        # Convert to Decimal. With no face value the price is zero and the
+        # convexity divides by it; with no coupon period the sums are empty
+        # and the convexity reads 0, which every claim used to match (#98).
+        fv = number(face_value, "face_value", minimum=_ZERO, exclusive=True)
+        cr = number(coupon_rate, "coupon_rate", minimum=_ZERO)
+        y = number(ytm, "ytm")
+        number(years_to_maturity, "years_to_maturity", minimum=_ZERO, exclusive=True)
+        frequency = self._coupon_frequency(frequency)
+        freq = Decimal(frequency)
+
         # Calculate convexity
-        n_periods = int(years_to_maturity * frequency)
+        n_periods = self._coupon_periods(years_to_maturity, frequency)
         coupon_payment = (fv * cr) / freq
         periodic_rate = y / freq
+        if 1 + periodic_rate <= 0:
+            # A discount factor (1 + y/n) at or below zero divides by zero or
+            # alternates in sign; there is no price to take convexity of.
+            raise UnverifiableError("ytm must be > -frequency")
         
         # Calculate weighted sum and price
         weighted_sum = Decimal("0")
@@ -309,18 +442,18 @@ class BondGuard:
         computed_conv_q = computed_convexity.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
         
         # Compare
-        if computed_convexity > 0:
-            diff_pct = abs(computed_convexity - llm_conv) / computed_convexity * 100
-        else:
-            diff_pct = Decimal("0")
-        verified = diff_pct <= self.tolerance_pct
-        
+        verified, diff_pct = within_tolerance(
+            computed_convexity, llm_conv, self.tolerance_pct, Decimal("0.0001")
+        )
+
         return BondResult(
             verified=verified,
             llm_value=f"{llm_conv}",
             computed_value=f"{computed_conv_q}",
-            difference=f"{diff_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%" if not verified else None,
-            formula_used="Convexity = Σ(t(t+1) × PV(CFt)) / (P × (1+y)²)"
+            difference=self._difference(
+                diff_pct, computed_conv_q, llm_conv, verified, Decimal("0.01"), ""
+            ),
+            formula_used=self.CONVEXITY_FORMULA
         )
     
     def verify_accrued_interest(
@@ -402,6 +535,80 @@ class BondGuard:
             formula_used="Dirty Price = Clean Price + Accrued Interest"
         )
     
+    @staticmethod
+    def _coupon_frequency(frequency: Any) -> int:
+        """Coupons a year: a whole number from 1 to MAX_COUPON_PERIODS.
+
+        A domain bound, not one implied by the period cap: a short bond could
+        fit 1,200 periods at a higher rate (three months at 1,460 a year is
+        365 periods), but no bond pays coupons more often than daily, so 1,200
+        a year is generous. The bound also keeps a float maturity times the
+        frequency from overflowing (10**400 cannot become a float). It is
+        checked here, with its own reason, before any period count is formed.
+        """
+        frequency = positive_int(frequency, "frequency")
+        if frequency > MAX_COUPON_PERIODS:
+            raise UnverifiableError(
+                f"frequency must be at most {MAX_COUPON_PERIODS} coupons a year"
+            )
+        return frequency
+
+    @staticmethod
+    def _coupon_periods(years_to_maturity: Any, frequency: int) -> int:
+        """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
+
+        Counted as main counts them, ``int(years_to_maturity * frequency)``,
+        so a float maturity rounds as it always has (``0.57 * 100`` years
+        reads as 56 periods), with the product taken at a width that cannot
+        wrap or lose the maturity's own precision (see _period_product). Turning a
+        maturity into its intended schedule, partial period included, is
+        #119. What this adds is the bound: a count above MAX_COUPON_PERIODS —
+        including a product that overflowed to infinity, which ``int()``
+        would raise on — is refused, and so is a maturity shorter than one
+        period, which truncates to zero periods and leaves nothing to price
+        rather than an empty sum to verify against.
+        """
+        periods = _period_product(years_to_maturity, frequency)
+        if periods > MAX_COUPON_PERIODS:
+            raise UnverifiableError(
+                f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
+            )
+        n_periods = int(periods)
+        if n_periods < 1:
+            raise UnverifiableError("maturity is shorter than one coupon period")
+        return n_periods
+
+    @staticmethod
+    def _unverifiable(raw_claim: Any, reason: Any, formula: str) -> BondResult:
+        """A verdict for an input or claim the guard cannot verify (#98)."""
+        return BondResult(
+            verified=False,
+            llm_value=shown(raw_claim),
+            computed_value=f"UNVERIFIABLE ({reason})",
+            formula_used=formula,
+        )
+
+    @staticmethod
+    def _difference(
+        diff_pct: Optional[Decimal],
+        computed: Decimal,
+        claimed: Decimal,
+        verified: bool,
+        quantum: Decimal,
+        unit: str,
+    ) -> Optional[str]:
+        """How far a refused claim is from the computed value.
+
+        A relative difference when the computed value is non-zero; the
+        absolute amount, in the claim's own unit, when it is zero, where a
+        percentage has no scale.
+        """
+        if verified:
+            return None
+        if diff_pct is None:
+            return f"{abs(claimed - computed).quantize(quantum, rounding=ROUND_HALF_UP)}{unit}"
+        return f"{diff_pct.quantize(quantum, rounding=ROUND_HALF_UP)}%"
+
     def _parse_rate(self, rate_str: str) -> Decimal:
         """Parse rate string to Decimal — fail-closed, no silent guessing.
 
@@ -415,7 +622,15 @@ class BondGuard:
         """
         rate_str = rate_str.strip()
         if "%" in rate_str:
-            return Decimal(rate_str.replace("%", "").strip()) / Decimal("100")
+            percent = Decimal(rate_str.replace("%", "").strip())
+            if not percent.is_finite():
+                return percent
+            # Shift the exponent instead of dividing by 100: division rounds
+            # to the context precision, so a long percentage claim could round
+            # onto a comparison bound that its decimal-fraction spelling does
+            # not reach, and the two would get different verdicts.
+            sign, digits, exponent = percent.as_tuple()
+            return Decimal((sign, digits, exponent - 2))
         # No % symbol: treat as decimal fraction (0.05 means 5%)
         return Decimal(rate_str)
     
