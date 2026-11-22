@@ -961,3 +961,21 @@ def test_narrow_float_months_keep_their_whole_periods(
             ).verified
             is True
         )
+
+
+@pytest.mark.parametrize(
+    "years",
+    [lambda: 10.0, lambda: Decimal(10), lambda: 10]
+    + ([lambda: np.float32(10), lambda: np.float64(10)] if np is not None else []),
+    ids=["float", "Decimal", "int"]
+    + (["float32", "float64"] if np is not None else []),
+)
+def test_a_frequency_too_large_for_a_float_is_refused_not_raised(years):
+    """float * 10**400 raises OverflowError: the int cannot become a float."""
+    for call in (
+        lambda y: B.verify_ytm(1000, 0.05, 999, y, "5%", frequency=10**400),
+        lambda y: B.verify_convexity(1000, 0.05, 0.05, y, "1", frequency=10**400),
+    ):
+        result = call(years())
+        assert refused(result)
+        assert "longer than" in result.computed_value

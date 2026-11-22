@@ -39,8 +39,10 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   is refused instead of raising `OverflowError`.
   NumPy integer and float scalars are accepted as before; NumPy's `bool_`
   is refused like `bool`, and a `Fraction` is refused with a clear reason
-  instead of raising, since its text (`"3/2"`) is not a number `Decimal`
+  instead of raising, since its text (`"1/12"`) is not a number `Decimal`
   reads and converting it by division would round.
+  A frequency too large to multiply a float maturity by (`10**400`) is
+  refused as past the period bound instead of raising `OverflowError`.
 - `verify_ytm` refuses a claim when its yield solver runs out of
   iterations without pricing the bond, instead of comparing against
   wherever the solver stopped — typically its lower bound of 0.01 %,

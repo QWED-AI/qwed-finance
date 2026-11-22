@@ -550,7 +550,14 @@ class BondGuard:
         period, which truncates to zero periods and leaves nothing to price
         rather than an empty sum to verify against.
         """
-        periods = _period_product(years_to_maturity, frequency)
+        try:
+            periods = _period_product(years_to_maturity, frequency)
+        except OverflowError:
+            # A float maturity times a frequency too large to be a float
+            # (10**400) cannot be formed at all; it is past any bound.
+            raise UnverifiableError(
+                f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
+            ) from None
         if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(
                 f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
