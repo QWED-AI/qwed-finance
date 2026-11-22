@@ -251,40 +251,79 @@ def _optional(row, column: str, optional: dict):
     return _cell(row, column)
 
 
+def _finite(value, column: str) -> float:
+    """A cell read as a finite float: float() accepts "inf" and "nan", and an
+    infinite rate leaves an NPV of only the first cash flow."""
+    import math
+
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{column} must be finite")
+    return number
+
+
+def _whole(value, column: str) -> int:
+    """A cell that counts days: int() would truncate 1.9 to 1 and verify the
+    claim against a different period, so a fraction is an error."""
+    number = _finite(value, column)
+    if not number.is_integer():
+        raise ValueError(f"{column} must be a whole number")
+    return int(number)
+
+
 def _npv_row(verifier, row, optional):
-    cashflows = [float(x) for x in str(_cell(row, "cashflows")).split(",")]
-    rate = float(_optional(row, "rate", optional))
+    cashflows = [_finite(x, "cashflows") for x in str(_cell(row, "cashflows")).split(",")]
+    rate = _finite(_optional(row, "rate", optional), "rate")
     return verifier.verify_npv(cashflows, rate, str(_cell(row, "llm_npv")))
 
 
 def _bond_row(guard, row, optional):
     return guard.verify_ytm(
-        float(_cell(row, "face_value")),
-        float(_optional(row, "coupon_rate", optional)),
-        float(_optional(row, "price", optional)),
-        float(_optional(row, "years", optional)),
+        _finite(_cell(row, "face_value"), "face_value"),
+        _finite(_optional(row, "coupon_rate", optional), "coupon_rate"),
+        _finite(_optional(row, "price", optional), "price"),
+        _finite(_optional(row, "years", optional), "years"),
         str(_cell(row, "llm_ytm")),
     )
 
 
 def _fx_row(guard, row, optional):
     return guard.verify_forward_rate(
-        float(_cell(row, "spot_rate")),
-        float(_optional(row, "domestic_rate", optional)),
-        float(_optional(row, "foreign_rate", optional)),
-        int(_optional(row, "days", optional)),
+        _finite(_cell(row, "spot_rate"), "spot_rate"),
+        _finite(_optional(row, "domestic_rate", optional), "domestic_rate"),
+        _finite(_optional(row, "foreign_rate", optional), "foreign_rate"),
+        _whole(_optional(row, "days", optional), "days"),
         str(_cell(row, "llm_forward")),
     )
 
 
 def _risk_row(guard, row, optional):
     return guard.verify_var(
-        float(_cell(row, "portfolio_value")),
-        float(_optional(row, "volatility", optional)),
-        float(_optional(row, "confidence", optional)),
-        int(_optional(row, "holding_days", optional)),
+        _finite(_cell(row, "portfolio_value"), "portfolio_value"),
+        _finite(_optional(row, "volatility", optional), "volatility"),
+        _finite(_optional(row, "confidence", optional), "confidence"),
+        _whole(_optional(row, "holding_days", optional), "holding_days"),
         str(_cell(row, "llm_var")),
     )
+
+
+def _csv_record_lines(path: str) -> list:
+    """The 1-based line each CSV data record starts on, skipping blank lines
+    as pandas does. A quoted value spanning lines or a blank line shifts rows
+    off their line, so row position + 2 is not a line number."""
+    import csv
+
+    lines = []
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        reader = csv.reader(f)
+        if next(reader, None) is None:
+            return lines
+        previous = reader.line_num
+        for record in reader:
+            if record:
+                lines.append(previous + 1)
+            previous = reader.line_num
+    return lines
 
 
 # Each scan mode: the columns a row must have, the optional columns and their
@@ -332,16 +371,29 @@ def action_scan_file(scan_type: str):
         with open(data_file) as f:
             df = pd.DataFrame(json.load(f))
     else:
-        df = pd.read_csv(data_file)
+        try:
+            df = pd.read_csv(data_file)
+        except pd.errors.EmptyDataError:
+            # A zero-byte or whitespace-only file has no header and no rows:
+            # it is reported through the same empty-scan failure.
+            df = pd.DataFrame()
     
     findings = []
     spec = SCAN_MODES[scan_type]
     guard = spec["guard"]()
     outcomes = {"verified": 0, "mismatch": 0, "skipped": 0, "error": 0}
 
-    def not_verified(idx, rule_id, message):
+    # Where each row starts in the file, for SARIF. JSON records carry no
+    # line, and a CSV whose records do not line up with the parsed rows
+    # cannot be mapped, so those findings point at line 1.
+    record_lines = [] if data_file.endswith(".json") else _csv_record_lines(data_file)
+    if len(record_lines) != len(df):
+        record_lines = []
+
+    def not_verified(position, rule_id, message):
+        line = record_lines[position] if 0 <= position < len(record_lines) else 1
         findings.append({
-            "file": data_file, "line": idx + 2, "rule_id": rule_id, "message": message,
+            "file": data_file, "line": line, "rule_id": rule_id, "message": message,
         })
 
     # A required column missing from the file means no row can be checked:
@@ -358,7 +410,8 @@ def action_scan_file(scan_type: str):
     for column in defaulted:
         print(f"ℹ️ Column '{column}' not in file; default {spec['optional'][column]} used for every row")
 
-    for idx, row in df.iterrows():
+    # Rows are numbered by position: a JSON index may be labels ("trade-1").
+    for idx, (_, row) in enumerate(df.iterrows()):
         if missing:
             outcomes["skipped"] += 1
             not_verified(idx, "QWED-FIN-002",
@@ -374,6 +427,13 @@ def action_scan_file(scan_type: str):
             continue
         if result.verified:
             outcomes["verified"] += 1
+        elif str(result.computed_value).startswith("UNVERIFIABLE"):
+            # The guard refused the row: nothing was compared, so it is an
+            # error, not a calculation mismatch.
+            outcomes["error"] += 1
+            reason = _shown(str(result.computed_value))
+            not_verified(idx, "QWED-FIN-002", f"Row not verified: {reason}")
+            print(f"⚠️ Row {idx}: not verified - {reason}")
         else:
             outcomes["mismatch"] += 1
             label = spec["label"]

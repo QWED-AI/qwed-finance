@@ -112,6 +112,32 @@ jobs:
           output_format: text
           fail_on_error: 'false'
 
+      # A misnamed claim column must fail every row, not pass them (#101)
+      - name: Create Renamed Column Data
+        run: |
+          cat > test-data/renamed_test.csv << 'EOF'
+          cashflows,rate,LLM_NPV
+          "-1000,300,400,500,600",0.10,376.86
+          EOF
+
+      - name: Test Scan With Renamed Column
+        id: renamed
+        uses: ./
+        with:
+          action: scan-npv
+          data_file: test-data/renamed_test.csv
+          output_format: text
+          fail_on_error: 'false'
+
+      - name: Renamed Column Must Not Pass
+        env:
+          ERRORS: ${{ steps.renamed.outputs.errors_count }}
+          VERIFIED: ${{ steps.renamed.outputs.verified_count }}
+        run: |
+          echo "errors_count=$ERRORS verified_count=$VERIFIED"
+          test "$ERRORS" = "1"
+          test "$VERIFIED" = "0"
+
   test-sarif-output:
     name: Test SARIF Output
     runs-on: ubuntu-latest
@@ -141,6 +167,15 @@ jobs:
           output_format: sarif
           fail_on_error: 'false'
       
+      - name: Check Scan Outputs
+        env:
+          ERRORS: ${{ steps.scan.outputs.errors_count }}
+          VERIFIED: ${{ steps.scan.outputs.verified_count }}
+        run: |
+          echo "errors_count=$ERRORS verified_count=$VERIFIED"
+          test "$ERRORS" -ge 1
+          test -n "$VERIFIED"
+
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4.34.1

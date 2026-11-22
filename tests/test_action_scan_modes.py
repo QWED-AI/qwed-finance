@@ -13,18 +13,47 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-_spec = importlib.util.spec_from_file_location("action_entrypoint", ROOT / "action_entrypoint.py")
+_spec = importlib.util.spec_from_file_location(
+    "action_entrypoint", ROOT / "action_entrypoint.py"
+)
 action = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(action)
 
 # One correct row per mode (values computed by the guards themselves).
 GOOD = {
-    "scan-npv": {"cashflows": "-1000,300,400,400,300", "rate": "0.1", "llm_npv": "$108.74"},
-    "scan-bonds": {"face_value": "1000", "coupon_rate": "0.05", "price": "950", "years": "10", "llm_ytm": "5.66%"},
-    "scan-fx": {"spot_rate": "1.10", "domestic_rate": "0.05", "foreign_rate": "0.02", "days": "90", "llm_forward": "1.10821"},
-    "scan-risk": {"portfolio_value": "1000000", "volatility": "0.02", "confidence": "0.95", "holding_days": "1", "llm_var": "$32,900"},
+    "scan-npv": {
+        "cashflows": "-1000,300,400,400,300",
+        "rate": "0.1",
+        "llm_npv": "$108.74",
+    },
+    "scan-bonds": {
+        "face_value": "1000",
+        "coupon_rate": "0.05",
+        "price": "950",
+        "years": "10",
+        "llm_ytm": "5.66%",
+    },
+    "scan-fx": {
+        "spot_rate": "1.10",
+        "domestic_rate": "0.05",
+        "foreign_rate": "0.02",
+        "days": "90",
+        "llm_forward": "1.10821",
+    },
+    "scan-risk": {
+        "portfolio_value": "1000000",
+        "volatility": "0.02",
+        "confidence": "0.95",
+        "holding_days": "1",
+        "llm_var": "$32,900",
+    },
 }
-CLAIM = {"scan-npv": "llm_npv", "scan-bonds": "llm_ytm", "scan-fx": "llm_forward", "scan-risk": "llm_var"}
+CLAIM = {
+    "scan-npv": "llm_npv",
+    "scan-bonds": "llm_ytm",
+    "scan-fx": "llm_forward",
+    "scan-risk": "llm_var",
+}
 MODES = list(GOOD)
 
 
@@ -37,7 +66,9 @@ def write_csv(path: Path, rows: list, columns: list | None = None) -> Path:
     return path
 
 
-def run_scan(mode, data_file, monkeypatch, tmp_path, capsys, fail_on_error="true", sarif=False):
+def run_scan(
+    mode, data_file, monkeypatch, tmp_path, capsys, fail_on_error="true", sarif=False
+):
     """Run a scan mode; return (exit_code, outputs, stdout)."""
     out = tmp_path / "github_output.txt"
     out.write_text("")
@@ -52,7 +83,9 @@ def run_scan(mode, data_file, monkeypatch, tmp_path, capsys, fail_on_error="true
         action.action_scan_file(mode)
     except SystemExit as e:
         code = e.code
-    outputs = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+    outputs = dict(
+        line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
+    )
     return code, outputs, capsys.readouterr().out
 
 
@@ -74,20 +107,35 @@ def test_correct_rows_pass(mode, monkeypatch, tmp_path, capsys):
 
 
 RENAMES = [
-    lambda c: c.upper(),                     # LLM_NPV, the issue's reproduction
-    lambda c: c.replace("_", " "),           # separator: space
-    lambda c: c.replace("_", "-"),           # separator: hyphen
-    lambda c: c.replace("_", ""),            # glued together
-    lambda c: c + " ",                       # trailing whitespace
-    lambda c: c + "s",                       # inflection
-    lambda c: c.replace("l", "\u04cf", 1),   # Cyrillic palochka look-alike
-    lambda c: c[:3] + "\u200b" + c[3:],      # zero-width space
+    lambda c: c.upper(),  # LLM_NPV, the issue's reproduction
+    lambda c: c.replace("_", " "),  # separator: space
+    lambda c: c.replace("_", "-"),  # separator: hyphen
+    lambda c: c.replace("_", ""),  # glued together
+    lambda c: c + " ",  # trailing whitespace
+    lambda c: c + "s",  # inflection
+    lambda c: c.replace("l", "\u04cf", 1),  # Cyrillic palochka look-alike
+    lambda c: c[:3] + "\u200b" + c[3:],  # zero-width space
 ]
 
 
-@pytest.mark.parametrize("rename", RENAMES, ids=["upper", "space", "hyphen", "glued", "trailing-space", "plural", "cyrillic", "zero-width"])
+@pytest.mark.parametrize(
+    "rename",
+    RENAMES,
+    ids=[
+        "upper",
+        "space",
+        "hyphen",
+        "glued",
+        "trailing-space",
+        "plural",
+        "cyrillic",
+        "zero-width",
+    ],
+)
 @pytest.mark.parametrize("mode", MODES)
-def test_a_misnamed_claim_column_fails_every_row(mode, rename, monkeypatch, tmp_path, capsys):
+def test_a_misnamed_claim_column_fails_every_row(
+    mode, rename, monkeypatch, tmp_path, capsys
+):
     claim = CLAIM[mode]
     row = {(rename(k) if k == claim else k): v for k, v in GOOD[mode].items()}
     data = write_csv(tmp_path / "renamed.csv", [row, row])
@@ -103,12 +151,27 @@ def test_a_misnamed_claim_column_fails_every_row(mode, rename, monkeypatch, tmp_
 # -- unparseable, blank or hostile claim values: the row fails ------------------------
 
 
-BAD_CLAIMS = ["$999 thousand", "NaN", "", "   ", "\t", "abc", "5\n::warning::injected", "1e999999"]
+BAD_CLAIMS = [
+    "$999 thousand",
+    "NaN",
+    "",
+    "   ",
+    "\t",
+    "abc",
+    "5\n::warning::injected",
+    "1e999999",
+]
 
 
-@pytest.mark.parametrize("claim", BAD_CLAIMS, ids=["words", "nan", "empty", "spaces", "tab", "text", "workflow-command", "huge"])
+@pytest.mark.parametrize(
+    "claim",
+    BAD_CLAIMS,
+    ids=["words", "nan", "empty", "spaces", "tab", "text", "workflow-command", "huge"],
+)
 @pytest.mark.parametrize("mode", MODES)
-def test_an_unverifiable_claim_fails_the_row(mode, claim, monkeypatch, tmp_path, capsys):
+def test_an_unverifiable_claim_fails_the_row(
+    mode, claim, monkeypatch, tmp_path, capsys
+):
     row = dict(GOOD[mode], **{CLAIM[mode]: claim})
     data = write_csv(tmp_path / "bad.csv", [row])
     code, out, stdout = run_scan(mode, data, monkeypatch, tmp_path, capsys)
@@ -120,7 +183,9 @@ def test_an_unverifiable_claim_fails_the_row(mode, claim, monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_a_blank_optional_cell_is_an_error_not_a_default(mode, monkeypatch, tmp_path, capsys):
+def test_a_blank_optional_cell_is_an_error_not_a_default(
+    mode, monkeypatch, tmp_path, capsys
+):
     optional = next(c for c in action.SCAN_MODES[mode]["optional"])
     row = dict(GOOD[mode], **{optional: ""})
     data = write_csv(tmp_path / "blank.csv", [row])
@@ -129,7 +194,9 @@ def test_a_blank_optional_cell_is_an_error_not_a_default(mode, monkeypatch, tmp_
     assert out["errors_count"] == "1"
 
 
-def test_an_absent_optional_column_uses_its_default_and_says_so(monkeypatch, tmp_path, capsys):
+def test_an_absent_optional_column_uses_its_default_and_says_so(
+    monkeypatch, tmp_path, capsys
+):
     """rate is absent from the whole file: its documented default 0.1 is used,
     which is the rate the control row assumes, and the log names it."""
     row = {k: v for k, v in GOOD["scan-npv"].items() if k != "rate"}
@@ -166,7 +233,9 @@ def test_one_good_and_one_bad_row_fails(monkeypatch, tmp_path, capsys):
 def test_fail_on_error_false_still_reports_the_failure(monkeypatch, tmp_path, capsys):
     row = {"cashflows": "-1000,300,400,400,300", "rate": "0.1", "LLM_NPV": "$108.74"}
     data = write_csv(tmp_path / "renamed.csv", [row])
-    code, out, _ = run_scan("scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error="false")
+    code, out, _ = run_scan(
+        "scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error="false"
+    )
     assert code == 0
     assert out["errors_count"] == "1"
     assert "failing" in out["badge_url"]
@@ -191,9 +260,147 @@ def test_sarif_reports_skipped_and_errored_rows(monkeypatch, tmp_path, capsys):
     assert code == 1
     sarif = json.loads((tmp_path / out["sarif_file"]).read_text())
     results = sarif["runs"][0]["results"]
-    assert sorted((r["ruleId"], r["locations"][0]["physicalLocation"]["region"]["startLine"]) for r in results) == [
+    assert sorted(
+        (r["ruleId"], r["locations"][0]["physicalLocation"]["region"]["startLine"])
+        for r in results
+    ) == [
         ("QWED-FIN-001", 4),
         ("QWED-FIN-002", 3),
     ]
     rules = {r["id"] for r in sarif["runs"][0]["tool"]["driver"]["rules"]}
     assert rules == {"QWED-FIN-001", "QWED-FIN-002"}
+
+
+# -- review round 1 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mode, column, value",
+    [
+        ("scan-risk", "holding_days", "1.9"),
+        ("scan-risk", "holding_days", "0.5"),
+        ("scan-fx", "days", "90.5"),
+        ("scan-npv", "rate", "Infinity"),
+        ("scan-npv", "rate", "-inf"),
+        ("scan-npv", "cashflows", "-100,inf"),
+        ("scan-bonds", "price", "inf"),
+        ("scan-fx", "spot_rate", "Infinity"),
+        ("scan-risk", "portfolio_value", "inf"),
+    ],
+)
+def test_non_finite_or_fractional_counts_fail_the_row(
+    mode, column, value, monkeypatch, tmp_path, capsys
+):
+    """int() truncated 1.9 holding days to 1, and an infinite NPV rate left
+    only the first cash flow: both verified a claim for different inputs."""
+    row = dict(GOOD[mode], **{column: value})
+    data = write_csv(tmp_path / "bad.csv", [row])
+    code, out, _ = run_scan(mode, data, monkeypatch, tmp_path, capsys)
+    assert code == 1
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+
+
+def test_a_whole_day_count_written_as_a_float_still_verifies(
+    monkeypatch, tmp_path, capsys
+):
+    row = dict(GOOD["scan-risk"], holding_days="1.0")
+    data = write_csv(tmp_path / "ok.csv", [row])
+    code, out, _ = run_scan("scan-risk", data, monkeypatch, tmp_path, capsys)
+    assert code == 0
+    assert out["verified_count"] == "1"
+
+
+@pytest.mark.parametrize("mode", ["scan-bonds", "scan-risk"])
+def test_a_guard_refusal_is_an_error_not_a_mismatch(
+    mode, monkeypatch, tmp_path, capsys
+):
+    """BondGuard and RiskGuard return UNVERIFIABLE for an unreadable claim
+    instead of raising; nothing was compared, so it is QWED-FIN-002."""
+    row = dict(GOOD[mode], **{CLAIM[mode]: "abc"})
+    data = write_csv(tmp_path / "refused.csv", [row])
+    code, out, stdout = run_scan(mode, data, monkeypatch, tmp_path, capsys, sarif=True)
+    assert code == 1
+    assert "(0 mismatch, 0 skipped, 1 error)" in stdout
+    sarif = json.loads((tmp_path / out["sarif_file"]).read_text())
+    assert [r["ruleId"] for r in sarif["runs"][0]["results"]] == ["QWED-FIN-002"]
+
+
+def _sarif_lines(out, tmp_path):
+    sarif = json.loads((tmp_path / out["sarif_file"]).read_text())
+    return [
+        r["locations"][0]["physicalLocation"]["region"]["startLine"]
+        for r in sarif["runs"][0]["results"]
+    ]
+
+
+def test_sarif_lines_survive_blank_lines_and_multiline_values(
+    monkeypatch, tmp_path, capsys
+):
+    data = tmp_path / "rows.csv"
+    good = GOOD["scan-npv"]
+    data.write_text(
+        "cashflows,rate,llm_npv\n"
+        f'"{good["cashflows"]}",0.1,"5\n::warning::x"\n'  # record on lines 2-3
+        "\n"  # blank line 4, skipped
+        f'"{good["cashflows"]}",0.1,abc\n',  # record on line 5
+        encoding="utf-8",
+    )
+    code, out, _ = run_scan("scan-npv", data, monkeypatch, tmp_path, capsys, sarif=True)
+    assert code == 1
+    assert _sarif_lines(out, tmp_path) == [2, 5]
+
+
+def test_json_findings_point_at_line_one(monkeypatch, tmp_path, capsys):
+    """A compact JSON array is one line; record positions are not lines."""
+    good = {
+        "cashflows": GOOD["scan-npv"]["cashflows"],
+        "rate": 0.1,
+        "llm_npv": "$108.74",
+    }
+    data = tmp_path / "rows.json"
+    data.write_text(json.dumps([good, dict(good, llm_npv="abc")]))
+    code, out, _ = run_scan("scan-npv", data, monkeypatch, tmp_path, capsys, sarif=True)
+    assert code == 1
+    assert _sarif_lines(out, tmp_path) == [1]
+
+
+def test_json_rows_labelled_by_string_do_not_crash(monkeypatch, tmp_path, capsys):
+    """A column-oriented JSON export keeps trade ids as the index; adding a
+    line offset to "trade-1" raised TypeError before any output was set."""
+    data = tmp_path / "rows.json"
+    data.write_text(
+        json.dumps(
+            {
+                "cashflows": {"trade-1": GOOD["scan-npv"]["cashflows"]},
+                "rate": {"trade-1": 0.1},
+                "llm_npv": {"trade-1": "abc"},
+            }
+        )
+    )
+    code, out, _ = run_scan(
+        "scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error="false"
+    )
+    assert code == 0
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+
+
+@pytest.mark.parametrize(
+    "content", ["", "  \n\n"], ids=["zero-byte", "whitespace-only"]
+)
+@pytest.mark.parametrize("fail_on_error, exit_code", [("true", 1), ("false", 0)])
+def test_a_file_without_a_header_is_an_empty_scan(
+    content, fail_on_error, exit_code, monkeypatch, tmp_path, capsys
+):
+    """pd.read_csv raised EmptyDataError before any output was set."""
+    data = tmp_path / "empty.csv"
+    data.write_text(content)
+    code, out, stdout = run_scan(
+        "scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error=fail_on_error
+    )
+    assert code == exit_code
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+    assert "failing" in out["badge_url"]
+    assert "No rows were verified" in stdout
