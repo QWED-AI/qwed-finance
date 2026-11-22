@@ -539,10 +539,12 @@ class BondGuard:
     def _coupon_frequency(frequency: Any) -> int:
         """Coupons a year: a whole number from 1 to MAX_COUPON_PERIODS.
 
-        No schedule within MAX_COUPON_PERIODS needs more coupons a year than
-        that, and a larger count cannot multiply a float maturity at all
-        (10**400 cannot become a float), so it is refused here, with its own
-        reason, before any period count is formed.
+        A domain bound, not one implied by the period cap: a short bond could
+        fit 1,200 periods at a higher rate (three months at 1,460 a year is
+        365 periods), but no bond pays coupons more often than daily, so 1,200
+        a year is generous. The bound also keeps a float maturity times the
+        frequency from overflowing (10**400 cannot become a float). It is
+        checked here, with its own reason, before any period count is formed.
         """
         frequency = positive_int(frequency, "frequency")
         if frequency > MAX_COUPON_PERIODS:
