@@ -813,7 +813,11 @@ def test_a_fraction_input_is_refused_with_a_clear_reason(call):
 
 
 def _main_count(years, frequency):
-    """main's count: the product in the maturity's own arithmetic, truncated."""
+    """main's count on NumPy 2: the product in the maturity's own arithmetic,
+    truncated. A NumPy float's dtype is pinned explicitly so the oracle does
+    not depend on the installed NumPy's promotion rules either."""
+    if np is not None and isinstance(years, np.floating):
+        return int(years * years.dtype.type(frequency))
     return int(years * frequency)
 
 
@@ -876,7 +880,7 @@ def test_a_computed_maturity_just_under_one_period_is_refused_not_priced_empty()
         (lambda: np.int8(30), lambda: 12, 360),
         (lambda: np.int8(30), lambda: np.int64(12), 360),
         (lambda: np.int16(30), lambda: np.int8(12), 360),
-        (lambda: np.float16(10.828125), lambda: 12, 129),
+        (lambda: np.float16(10.828125), lambda: 12, 130),  # as main on NumPy 2; #119
         (lambda: np.float32(10.828125), lambda: np.int64(12), 129),
     ],
     ids=[
@@ -888,38 +892,72 @@ def test_a_computed_maturity_just_under_one_period_is_refused_not_priced_empty()
     ],
 )
 def test_mixed_numpy_dtypes_count_without_wrapping(make_years, make_frequency, periods):
-    """Under NumPy 2, np.int8(30) * 12 wraps to 104 and np.float16(10.828125)
-    * 12 rounds to 130. The count is taken as Python ints, or widened floats,
-    through both public verifiers."""
+    """Under NumPy 2, np.int8(30) * 12 wraps to 104: an integral count is taken
+    as Python ints. A NumPy float is counted in its own dtype, on every NumPy
+    version. Checked through both public verifiers."""
     years, frequency = make_years(), make_frequency()
     ytm = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
     assert ytm.details["periods"] == periods
-    # The same bond with the maturity as the plain Python number it holds.
-    exact = B.verify_convexity(1000, 0.05, 0.05, years.item(), "1", frequency=12)
-    mixed = B.verify_convexity(1000, 0.05, 0.05, years, "1", frequency=frequency)
-    assert mixed.computed_value == exact.computed_value
+    if isinstance(years, np.integer):
+        # An integral maturity prices exactly as the Python int it holds.
+        exact = B.verify_convexity(1000, 0.05, 0.05, years.item(), "1", frequency=12)
+        mixed = B.verify_convexity(1000, 0.05, 0.05, years, "1", frequency=frequency)
+        assert mixed.computed_value == exact.computed_value
 
 
 @needs_numpy
 def test_an_integral_maturity_too_long_to_count_is_refused_not_wrapped():
-    huge = np.int64(2**62)
-    assert refused(B.verify_ytm(1000, 0.05, 999, huge, "5%", frequency=12))
+    huge = np.int64(2**62)  # times 12 wraps to 0 in int64
+    result = B.verify_ytm(1000, 0.05, 999, huge, "5%", frequency=12)
+    assert refused(result)
+    assert "longer than" in result.computed_value  # not "shorter than": no wrap
 
 
 @needs_numpy
 @pytest.mark.parametrize(
-    "years, kind",
-    [("int8", int), ("int64", int), ("float16", float), ("float32", float)],
+    "value, kind",
+    [
+        (lambda: np.int8(30), int),
+        (lambda: np.int64(30), int),
+        (lambda: np.float16(10.828125), "float16"),
+        (lambda: np.float32(10.828125), "float32"),
+    ],
+    ids=["int8", "int64", "float16", "float32"],
 )
-def test_the_period_product_is_never_a_narrow_numpy_scalar(years, kind):
-    """NumPy 1 and 2 promote scalar arithmetic differently (NEP 50); the
-    product is a Python int or float, so neither set of rules applies."""
+def test_the_period_product_does_not_depend_on_numpy_promotion(value, kind):
+    """NumPy 1 and 2 promote scalar arithmetic differently (NEP 50): an
+    integral product is a Python int, and a float product keeps the input's
+    dtype, so neither set of rules decides the count."""
     from qwed_finance.bond_guard import _period_product
 
-    value = {
-        "int8": np.int8(30),
-        "int64": np.int64(30),
-        "float16": np.float16(10.828125),
-        "float32": np.float32(10.828125),
-    }[years]
-    assert type(_period_product(value, 12)) is kind
+    product = _period_product(value(), 12)
+    if kind is int:
+        assert type(product) is int
+    else:
+        assert product.dtype == np.dtype(kind)
+
+
+@needs_numpy
+@pytest.mark.parametrize(
+    "years, frequency, periods, convexity",
+    [
+        (lambda: np.float32(5 / 12), 12, 5, "0.2066"),
+        (lambda: np.float16(1 / 12), 12, 1, None),
+    ],
+    ids=["float32-five-months", "float16-one-month"],
+)
+def test_narrow_float_months_keep_their_whole_periods(
+    years, frequency, periods, convexity
+):
+    y = years()
+    assert (
+        B.verify_ytm(1000, 0.05, 999, y, "5%", frequency=frequency).details["periods"]
+        == periods
+    )
+    if convexity:
+        assert (
+            B.verify_convexity(
+                1000, 0, 0.05, y, convexity, frequency=frequency
+            ).verified
+            is True
+        )

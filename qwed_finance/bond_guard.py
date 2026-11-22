@@ -38,14 +38,16 @@ _PRICE_RESIDUAL = Decimal("1e-13")
 
 
 def _period_product(years_to_maturity: Any, frequency: int) -> Any:
-    """years_to_maturity * frequency, without narrow-type arithmetic.
+    """years_to_maturity * frequency, the same on every NumPy version.
 
-    Under NumPy 2 a NumPy scalar times a Python int keeps the scalar's
-    dtype, so np.int8(30) * 12 wraps to 104, and np.float16(10.828125) * 12
-    rounds 129.9375 up to 130. An integral maturity is multiplied as a
-    Python int, exactly; a NumPy float narrower than a double is widened to
-    a Python float first, which holds it exactly. A double, a longdouble or
-    a Decimal is multiplied in its own arithmetic, as main did.
+    An integral maturity is multiplied as a Python int, so it cannot wrap:
+    under NumPy 2, np.int8(30) * 12 keeps int8 and wraps to 104. A NumPy
+    float is multiplied by the frequency in its own dtype, explicitly: NumPy
+    1 and 2 promote a scalar times a Python int differently (NEP 50), and a
+    fixed dtype gives one answer on both — main's answer on NumPy 2, where
+    np.float32(5/6) * 6 is exactly 5. A Python float or a Decimal is
+    multiplied in its own arithmetic, as main did. How a narrow float maps
+    onto its intended schedule is #119.
     """
     if isinstance(years_to_maturity, numbers.Integral):
         return int(years_to_maturity) * frequency
@@ -53,8 +55,10 @@ def _period_product(years_to_maturity: Any, frequency: int) -> Any:
         import numpy
     except ImportError:  # pragma: no cover - numpy ships with pandas
         return years_to_maturity * frequency
-    if isinstance(years_to_maturity, numpy.floating) and years_to_maturity.dtype.itemsize < 8:
-        return float(years_to_maturity) * frequency
+    if isinstance(years_to_maturity, numpy.floating):
+        dtype = years_to_maturity.dtype.type
+        with numpy.errstate(over="ignore"):
+            return years_to_maturity * dtype(frequency)
     return years_to_maturity * frequency
 
 
