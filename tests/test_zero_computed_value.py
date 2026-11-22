@@ -540,7 +540,7 @@ def test_one_month_bond_is_priced_not_refused():
     assert not result.computed_value.startswith("UNVERIFIABLE")
 
 
-def test_an_explicit_decimal_maturity_is_never_snapped():
+def test_an_explicit_decimal_maturity_is_counted_exactly():
     """A Decimal maturity is exact: 0.16666666666666666 years is just under
     two monthly periods, and counts as one."""
     result = B.verify_ytm(

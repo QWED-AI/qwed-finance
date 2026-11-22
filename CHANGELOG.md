@@ -38,11 +38,14 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   it is bounded, so a maturity that overflows the count (`1e308` years)
   is refused instead of raising `OverflowError`.
   NumPy integer and float scalars are accepted as before; NumPy's `bool_`
-  is refused like `bool`.
+  is refused like `bool`, and a `Fraction` is refused with a clear reason
+  instead of raising, since its text (`"3/2"`) is not a number `Decimal`
+  reads and converting it by division would round.
 - `verify_ytm` refuses a claim when its yield solver runs out of
   iterations without pricing the bond, instead of comparing against
   wherever the solver stopped — typically its lower bound of 0.01 %,
-  which verified a claim of `0.0100%` for a bond yielding 0.0099 %. The
+  which verified a claim of `0.0100%` for a ten-year zero-coupon bond
+  yielding 0.005 %. The
   solver counts as converged when the price residual is within `1e-13`
   of the price, relative to it, rather than within an absolute `1e-10`,
   which let a bond with a tiny face value converge at any yield; the
