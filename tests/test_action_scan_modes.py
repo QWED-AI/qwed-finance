@@ -434,7 +434,7 @@ def test_a_field_past_the_csv_module_limit_does_not_abort(
         tmp_path / "long.csv",
         [{"cashflows": long_cashflows, "rate": "0.1", "llm_npv": "abc"}],
     )
-    code, out, _ = run_scan(
+    code, out, stdout = run_scan(
         "scan-npv",
         data,
         monkeypatch,
@@ -445,6 +445,8 @@ def test_a_field_past_the_csv_module_limit_does_not_abort(
     )
     assert code == 0
     assert out["errors_count"] == "1"
+    # pandas parsed the row: it is one row-level error, not a file read error.
+    assert "0/1 rows verified (0 mismatch, 0 skipped, 1 error)" in stdout
     if sarif:
         assert _sarif_lines(out, tmp_path) == [1]
 
@@ -496,3 +498,88 @@ def test_an_unreadable_json_file_is_a_failed_scan_with_outputs(
     assert out["errors_count"] == "1"
     assert out["verified_count"] == "0"
     assert "failing" in out["badge_url"]
+
+
+# -- review round 3 ------------------------------------------------------------------
+
+
+def test_a_row_of_empty_cells_keeps_its_line(monkeypatch, tmp_path, capsys):
+    """ ",," is a row of empty cells that pandas keeps; a leading blank line
+    precedes the header. Neither shifts the line map."""
+    good = GOOD["scan-npv"]["cashflows"]
+    data = tmp_path / "rows.csv"
+    data.write_text(f'\ncashflows,rate,llm_npv\n,,\n"{good}",0.1,$1.00\n')
+    code, out, _ = run_scan("scan-npv", data, monkeypatch, tmp_path, capsys, sarif=True)
+    assert code == 1
+    assert _sarif_lines(out, tmp_path) == [3, 4]
+
+
+def test_json_integers_read_as_decimal_still_verify(monkeypatch, tmp_path, capsys):
+    """JSON integers are read as Decimal, so a missing cell cannot promote an
+    integer column to float64 and round it; integer cells still verify."""
+    good = {
+        "portfolio_value": 1000000,
+        "volatility": 0.02,
+        "confidence": 0.95,
+        "holding_days": 1,
+        "llm_var": "$32,900",
+    }
+    partial = {k: v for k, v in good.items() if k != "holding_days"}
+    data = tmp_path / "rows.json"
+    data.write_text(json.dumps([good, partial]))
+    code, out, _ = run_scan(
+        "scan-risk", data, monkeypatch, tmp_path, capsys, fail_on_error="false"
+    )
+    assert out["verified_count"] == "1"
+    assert out["errors_count"] == "1"
+
+
+@pytest.mark.parametrize("days", ["1e1000000", "1000001", "-1000001"])
+def test_an_out_of_range_day_count_is_refused_quickly(
+    days, monkeypatch, tmp_path, capsys
+):
+    import time
+
+    data = write_csv(
+        tmp_path / "rows.csv", [dict(GOOD["scan-risk"], holding_days=days)]
+    )
+    started = time.perf_counter()
+    code, out, _ = run_scan("scan-risk", data, monkeypatch, tmp_path, capsys)
+    assert time.perf_counter() - started < 5
+    assert code == 1
+    assert out["errors_count"] == "1"
+
+
+def test_a_directory_as_the_data_file_is_a_failed_scan(monkeypatch, tmp_path, capsys):
+    folder = tmp_path / "data.csv"
+    folder.mkdir()
+    code, out, _ = run_scan(
+        "scan-npv",
+        folder,
+        monkeypatch,
+        tmp_path,
+        capsys,
+        fail_on_error="false",
+        sarif=True,
+    )
+    assert code == 0
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+
+
+@pytest.mark.parametrize(
+    "content",
+    ['[{"llm_npv": "1"}, null]', "[1, 2]", '"text"', "42"],
+    ids=["null-record", "numbers", "string", "number"],
+)
+def test_json_that_is_not_records_is_a_failed_scan(
+    content, monkeypatch, tmp_path, capsys
+):
+    data = tmp_path / "rows.json"
+    data.write_text(content)
+    code, out, _ = run_scan(
+        "scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error="false"
+    )
+    assert code == 0
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"

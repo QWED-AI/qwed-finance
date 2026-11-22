@@ -262,6 +262,10 @@ def _finite(value, column: str) -> float:
     return number
 
 
+# Largest day count a scan row may carry (about 2,700 years).
+MAX_DAY_COUNT = 1_000_000
+
+
 def _whole(value, column: str) -> int:
     """A cell that counts days: int() would truncate 1.9 to 1 and verify the
     claim against a different period, so a fraction is an error. It is checked
@@ -275,6 +279,10 @@ def _whole(value, column: str) -> int:
         raise ValueError(f"{column} must be a whole number") from None
     if not number.is_finite() or number != number.to_integral_value():
         raise ValueError(f"{column} must be a whole number")
+    # Bounded before int(): 1e1000000 is integral and would materialise a
+    # million-digit integer. No day count in these formulas comes near this.
+    if number.copy_abs() > MAX_DAY_COUNT:
+        raise ValueError(f"{column} must be at most {MAX_DAY_COUNT}")
     return int(number)
 
 
@@ -320,23 +328,45 @@ def _csv_record_lines(path: str) -> list:
     off their line, so row position + 2 is not a line number."""
     import csv
 
+    def blank(record) -> bool:
+        # pandas skips a line that is empty or only whitespace; a line with
+        # delimiters (",,") is a row of empty cells, and pandas keeps it.
+        return not record or (len(record) == 1 and not record[0].strip())
+
     lines = []
+    header_seen = False
     try:
         with open(path, newline="", encoding="utf-8", errors="replace") as f:
             reader = csv.reader(f)
-            if next(reader, None) is None:
-                return lines
-            previous = reader.line_num
+            previous = 0
             for record in reader:
-                # pandas skips a line that is empty or only whitespace.
-                if any(field.strip() for field in record):
-                    lines.append(previous + 1)
-                previous = reader.line_num
+                start, previous = previous + 1, reader.line_num
+                if blank(record):
+                    continue
+                if not header_seen:
+                    header_seen = True  # leading blank lines precede the header
+                    continue
+                lines.append(start)
     except csv.Error:
         # A file pandas read but the csv module cannot (a field past its
         # 131,072-character limit) has no line map: findings use line 1.
         return []
     return lines
+
+
+def _json_frame(data):
+    """A DataFrame from decoded JSON: an array of objects, or an object of
+    columns. Anything else (an array holding null or a number, a bare value)
+    is unreadable rather than a pandas AttributeError."""
+    import pandas as pd
+
+    if isinstance(data, list):
+        if not all(isinstance(record, dict) for record in data):
+            raise ValueError("a JSON array must contain only objects")
+        return pd.DataFrame(data)
+    if isinstance(data, dict):
+        return pd.DataFrame(data)
+    raise ValueError("JSON must be an array of objects or an object of columns")
 
 
 # Each scan mode: the columns a row must have, the optional columns and their
@@ -391,12 +421,12 @@ def action_scan_file(scan_type: str):
         if data_file.endswith(".json"):
             with open(data_file, encoding="utf-8") as f:
                 text = f.read()
-            df = pd.DataFrame(json.loads(text, parse_float=Decimal)) if text.strip() else pd.DataFrame()
+            df = _json_frame(json.loads(text, parse_float=Decimal, parse_int=Decimal)) if text.strip() else pd.DataFrame()
         else:
             df = pd.read_csv(data_file, dtype=str)
     except pd.errors.EmptyDataError:
         df = pd.DataFrame()
-    except (ValueError, TypeError, pd.errors.ParserError) as e:
+    except (OSError, ValueError, TypeError, pd.errors.ParserError) as e:
         df = pd.DataFrame()
         read_error = f"{type(e).__name__}: {_shown(str(e))}"
         print(f"❌ Could not read {data_file}: {read_error}")
@@ -410,7 +440,11 @@ def action_scan_file(scan_type: str):
     # line, and a CSV whose records do not line up with the parsed rows
     # cannot be mapped, so those findings point at line 1.
     wants_sarif = os.getenv("INPUT_OUTPUT_FORMAT", "text") == "sarif"
-    record_lines = _csv_record_lines(data_file) if wants_sarif and not data_file.endswith(".json") else []
+    record_lines = (
+        _csv_record_lines(data_file)
+        if wants_sarif and read_error is None and not data_file.endswith(".json")
+        else []
+    )
     if len(record_lines) != len(df):
         record_lines = []
 
