@@ -5,6 +5,7 @@ Deterministic verification for YTM, Duration, Convexity calculations
 All financial math uses Decimal for exact arithmetic.
 """
 
+import numbers
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, ROUND_HALF_UP, getcontext
 from typing import Any, Optional, Tuple
@@ -34,6 +35,27 @@ MAX_COUPON_PERIODS = 1200
 # counts as converged. An absolute residual (it was 1e-10) let a bond with
 # a tiny face value converge at any yield: every price is within 1e-10.
 _PRICE_RESIDUAL = Decimal("1e-13")
+
+
+def _period_product(years_to_maturity: Any, frequency: int) -> Any:
+    """years_to_maturity * frequency, without narrow-type arithmetic.
+
+    Under NumPy 2 a NumPy scalar times a Python int keeps the scalar's
+    dtype, so np.int8(30) * 12 wraps to 104, and np.float16(10.828125) * 12
+    rounds 129.9375 up to 130. An integral maturity is multiplied as a
+    Python int, exactly; a NumPy float narrower than a double is widened to
+    a Python float first, which holds it exactly. A double, a longdouble or
+    a Decimal is multiplied in its own arithmetic, as main did.
+    """
+    if isinstance(years_to_maturity, numbers.Integral):
+        return int(years_to_maturity) * frequency
+    try:
+        import numpy
+    except ImportError:  # pragma: no cover - numpy ships with pandas
+        return years_to_maturity * frequency
+    if isinstance(years_to_maturity, numpy.floating) and years_to_maturity.dtype.itemsize < 8:
+        return float(years_to_maturity) * frequency
+    return years_to_maturity * frequency
 
 
 class DayCountConvention(Enum):
@@ -513,9 +535,10 @@ class BondGuard:
     def _coupon_periods(years_to_maturity: Any, frequency: int) -> int:
         """Whole coupon periods to maturity, from 1 to MAX_COUPON_PERIODS.
 
-        Counted as main counts them, ``int(years_to_maturity * frequency)``
-        in the maturity's own arithmetic, so a float maturity rounds as it
-        always has (``0.57 * 100`` years reads as 56 periods). Turning a
+        Counted as main counts them, ``int(years_to_maturity * frequency)``,
+        so a float maturity rounds as it always has (``0.57 * 100`` years
+        reads as 56 periods), with the product taken at a width that cannot
+        wrap or lose the maturity's own precision (see _period_product). Turning a
         maturity into its intended schedule, partial period included, is
         #119. What this adds is the bound: a count above MAX_COUPON_PERIODS —
         including a product that overflowed to infinity, which ``int()``
@@ -523,8 +546,8 @@ class BondGuard:
         period, which truncates to zero periods and leaves nothing to price
         rather than an empty sum to verify against.
         """
-        periods = years_to_maturity * frequency
-        if not periods <= MAX_COUPON_PERIODS:
+        periods = _period_product(years_to_maturity, frequency)
+        if periods > MAX_COUPON_PERIODS:
             raise UnverifiableError(
                 f"maturity is longer than {MAX_COUPON_PERIODS} coupon periods"
             )

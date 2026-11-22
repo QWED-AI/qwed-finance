@@ -867,3 +867,59 @@ def test_a_computed_maturity_just_under_one_period_is_refused_not_priced_empty()
     """1.4 - 0.9 is 0.4999999999999999: under one semi-annual period. main
     priced an empty sum and verified any convexity; it is refused (#119)."""
     assert refused(B.verify_convexity(1000, 0.05, 0.06, 1.4 - 0.9, "9999"))
+
+
+@needs_numpy
+@pytest.mark.parametrize(
+    "make_years, make_frequency, periods",
+    [
+        (lambda: np.int8(30), lambda: 12, 360),
+        (lambda: np.int8(30), lambda: np.int64(12), 360),
+        (lambda: np.int16(30), lambda: np.int8(12), 360),
+        (lambda: np.float16(10.828125), lambda: 12, 129),
+        (lambda: np.float32(10.828125), lambda: np.int64(12), 129),
+    ],
+    ids=[
+        "int8-x-int",
+        "int8-x-int64",
+        "int16-x-int8",
+        "float16-x-int",
+        "float32-x-int64",
+    ],
+)
+def test_mixed_numpy_dtypes_count_without_wrapping(make_years, make_frequency, periods):
+    """Under NumPy 2, np.int8(30) * 12 wraps to 104 and np.float16(10.828125)
+    * 12 rounds to 130. The count is taken as Python ints, or widened floats,
+    through both public verifiers."""
+    years, frequency = make_years(), make_frequency()
+    ytm = B.verify_ytm(1000, 0.05, 999, years, "5%", frequency=frequency)
+    assert ytm.details["periods"] == periods
+    # The same bond with the maturity as the plain Python number it holds.
+    exact = B.verify_convexity(1000, 0.05, 0.05, years.item(), "1", frequency=12)
+    mixed = B.verify_convexity(1000, 0.05, 0.05, years, "1", frequency=frequency)
+    assert mixed.computed_value == exact.computed_value
+
+
+@needs_numpy
+def test_an_integral_maturity_too_long_to_count_is_refused_not_wrapped():
+    huge = np.int64(2**62)
+    assert refused(B.verify_ytm(1000, 0.05, 999, huge, "5%", frequency=12))
+
+
+@needs_numpy
+@pytest.mark.parametrize(
+    "years, kind",
+    [("int8", int), ("int64", int), ("float16", float), ("float32", float)],
+)
+def test_the_period_product_is_never_a_narrow_numpy_scalar(years, kind):
+    """NumPy 1 and 2 promote scalar arithmetic differently (NEP 50); the
+    product is a Python int or float, so neither set of rules applies."""
+    from qwed_finance.bond_guard import _period_product
+
+    value = {
+        "int8": np.int8(30),
+        "int64": np.int64(30),
+        "float16": np.float16(10.828125),
+        "float32": np.float32(10.828125),
+    }[years]
+    assert type(_period_product(value, 12)) is kind
