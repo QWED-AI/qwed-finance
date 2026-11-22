@@ -264,9 +264,16 @@ def _finite(value, column: str) -> float:
 
 def _whole(value, column: str) -> int:
     """A cell that counts days: int() would truncate 1.9 to 1 and verify the
-    claim against a different period, so a fraction is an error."""
-    number = _finite(value, column)
-    if not number.is_integer():
+    claim against a different period, so a fraction is an error. It is checked
+    on the exact decimal text — files are read without float conversion — as
+    0.99999999999999999 becomes 1.0 in float."""
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation:
+        raise ValueError(f"{column} must be a whole number") from None
+    if not number.is_finite() or number != number.to_integral_value():
         raise ValueError(f"{column} must be a whole number")
     return int(number)
 
@@ -314,15 +321,21 @@ def _csv_record_lines(path: str) -> list:
     import csv
 
     lines = []
-    with open(path, newline="", encoding="utf-8", errors="replace") as f:
-        reader = csv.reader(f)
-        if next(reader, None) is None:
-            return lines
-        previous = reader.line_num
-        for record in reader:
-            if record:
-                lines.append(previous + 1)
+    try:
+        with open(path, newline="", encoding="utf-8", errors="replace") as f:
+            reader = csv.reader(f)
+            if next(reader, None) is None:
+                return lines
             previous = reader.line_num
+            for record in reader:
+                # pandas skips a line that is empty or only whitespace.
+                if any(field.strip() for field in record):
+                    lines.append(previous + 1)
+                previous = reader.line_num
+    except csv.Error:
+        # A file pandas read but the csv module cannot (a field past its
+        # 131,072-character limit) has no line map: findings use line 1.
+        return []
     return lines
 
 
@@ -367,16 +380,26 @@ def action_scan_file(scan_type: str):
     print(f"   Mode: {scan_type}")
     
     # Read data
-    if data_file.endswith(".json"):
-        with open(data_file) as f:
-            df = pd.DataFrame(json.load(f))
-    else:
-        try:
-            df = pd.read_csv(data_file)
-        except pd.errors.EmptyDataError:
-            # A zero-byte or whitespace-only file has no header and no rows:
-            # it is reported through the same empty-scan failure.
-            df = pd.DataFrame()
+    # Values are read as their exact text (CSV) or as Decimal (JSON numbers),
+    # never through float, so a check such as "whole number of days" sees
+    # what the file says. An empty or unreadable file is a scan with no rows,
+    # which fails with its outputs set, rather than an exception.
+    from decimal import Decimal
+
+    read_error = None
+    try:
+        if data_file.endswith(".json"):
+            with open(data_file, encoding="utf-8") as f:
+                text = f.read()
+            df = pd.DataFrame(json.loads(text, parse_float=Decimal)) if text.strip() else pd.DataFrame()
+        else:
+            df = pd.read_csv(data_file, dtype=str)
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame()
+    except (ValueError, TypeError, pd.errors.ParserError) as e:
+        df = pd.DataFrame()
+        read_error = f"{type(e).__name__}: {_shown(str(e))}"
+        print(f"❌ Could not read {data_file}: {read_error}")
     
     findings = []
     spec = SCAN_MODES[scan_type]
@@ -386,7 +409,8 @@ def action_scan_file(scan_type: str):
     # Where each row starts in the file, for SARIF. JSON records carry no
     # line, and a CSV whose records do not line up with the parsed rows
     # cannot be mapped, so those findings point at line 1.
-    record_lines = [] if data_file.endswith(".json") else _csv_record_lines(data_file)
+    wants_sarif = os.getenv("INPUT_OUTPUT_FORMAT", "text") == "sarif"
+    record_lines = _csv_record_lines(data_file) if wants_sarif and not data_file.endswith(".json") else []
     if len(record_lines) != len(df):
         record_lines = []
 
@@ -447,7 +471,7 @@ def action_scan_file(scan_type: str):
     if outcomes["verified"] == 0 and failed == 0:
         # An empty file verified nothing: that is a failure, not a pass.
         failed = 1
-        not_verified(-1, "QWED-FIN-002", "No rows to verify")
+        not_verified(-1, "QWED-FIN-002", f"File not read: {read_error}" if read_error else "No rows to verify")
     passed = failed == 0
 
     print(f"\n{'='*50}")

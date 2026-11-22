@@ -404,3 +404,95 @@ def test_a_file_without_a_header_is_an_empty_scan(
     assert out["verified_count"] == "0"
     assert "failing" in out["badge_url"]
     assert "No rows were verified" in stdout
+
+
+# -- review round 2 ------------------------------------------------------------------
+
+
+def test_a_whitespace_only_line_does_not_shift_sarif_lines(
+    monkeypatch, tmp_path, capsys
+):
+    """pandas skips a whitespace-only line; the line map must skip it too."""
+    good = GOOD["scan-npv"]["cashflows"]
+    data = tmp_path / "rows.csv"
+    data.write_text(
+        f'cashflows,rate,llm_npv\n"{good}",0.1,$108.74\n   \n"{good}",0.1,abc\n'
+    )
+    code, out, _ = run_scan("scan-npv", data, monkeypatch, tmp_path, capsys, sarif=True)
+    assert code == 1
+    assert _sarif_lines(out, tmp_path) == [4]
+
+
+@pytest.mark.parametrize("sarif", [True, False], ids=["sarif", "text"])
+def test_a_field_past_the_csv_module_limit_does_not_abort(
+    sarif, monkeypatch, tmp_path, capsys
+):
+    """pandas reads a 160,000-character field the csv module refuses: the scan
+    still verifies, and SARIF findings fall back to line 1."""
+    long_cashflows = "-1000," + ",".join(["100"] * 40000)
+    data = write_csv(
+        tmp_path / "long.csv",
+        [{"cashflows": long_cashflows, "rate": "0.1", "llm_npv": "abc"}],
+    )
+    code, out, _ = run_scan(
+        "scan-npv",
+        data,
+        monkeypatch,
+        tmp_path,
+        capsys,
+        fail_on_error="false",
+        sarif=sarif,
+    )
+    assert code == 0
+    assert out["errors_count"] == "1"
+    if sarif:
+        assert _sarif_lines(out, tmp_path) == [1]
+
+
+@pytest.mark.parametrize(
+    "fmt, holding_days",
+    [
+        ("csv", "0.99999999999999999"),
+        ("json-string", "0.99999999999999999"),
+        ("json-number", 0.99999999999999999),
+    ],
+)
+def test_a_day_count_just_under_one_is_not_rounded_to_whole(
+    fmt, holding_days, monkeypatch, tmp_path, capsys
+):
+    """In float 0.99999999999999999 is 1.0: the file is read as exact text or
+    Decimal, so the count is refused, not verified as one day."""
+    if fmt == "csv":
+        data = write_csv(
+            tmp_path / "rows.csv", [dict(GOOD["scan-risk"], holding_days=holding_days)]
+        )
+    else:
+        row = dict(GOOD["scan-risk"], holding_days="__DAYS__")
+        text = json.dumps([row]).replace(
+            '"__DAYS__"',
+            json.dumps(holding_days) if fmt == "json-string" else "0.99999999999999999",
+        )
+        data = tmp_path / "rows.json"
+        data.write_text(text)
+    code, out, _ = run_scan("scan-risk", data, monkeypatch, tmp_path, capsys)
+    assert code == 1
+    assert out["verified_count"] == "0"
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["", "   \n", "{not json", '{"a": 1}'],
+    ids=["zero-byte", "whitespace", "malformed", "scalars"],
+)
+def test_an_unreadable_json_file_is_a_failed_scan_with_outputs(
+    content, monkeypatch, tmp_path, capsys
+):
+    data = tmp_path / "rows.json"
+    data.write_text(content)
+    code, out, _ = run_scan(
+        "scan-npv", data, monkeypatch, tmp_path, capsys, fail_on_error="false"
+    )
+    assert code == 0
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+    assert "failing" in out["badge_url"]

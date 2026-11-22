@@ -43,7 +43,7 @@ outputs:
   computed_value:
     description: 'QWED computed value'
   errors_count:
-    description: 'Rows that failed in scan modes: mismatches, rows skipped for missing columns, and rows that could not be parsed or verified. A file with no rows, including a zero-byte file, reports 1'
+    description: 'Rows that failed in scan modes: mismatches, rows skipped for missing columns, and rows that could not be parsed or verified. A file with no rows, or one that cannot be read (zero-byte, malformed CSV or JSON), reports 1'
   verified_count:
     description: 'Rows verified in scan modes; the scan passes only when every row is verified and there is at least one'
   badge_url:

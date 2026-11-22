@@ -154,7 +154,7 @@ jobs:
           mkdir -p test-data
           cat > test-data/error_test.csv << 'EOF'
           cashflows,rate,llm_npv
-          "-1000,300,400,500,600",0.10,376.86
+          "-1000,300,400,500,600",0.10,388.77
           "-5000,1000,1500,2000,2500",0.08,9999.99
           EOF
       
@@ -173,8 +173,8 @@ jobs:
           VERIFIED: ${{ steps.scan.outputs.verified_count }}
         run: |
           echo "errors_count=$ERRORS verified_count=$VERIFIED"
-          test "$ERRORS" -ge 1
-          test -n "$VERIFIED"
+          test "$ERRORS" = "1"
+          test "$VERIFIED" = "1"
 
       - name: Upload SARIF
         if: always()
