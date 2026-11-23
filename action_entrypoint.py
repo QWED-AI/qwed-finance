@@ -280,7 +280,7 @@ def _whole(value, column: str) -> int:
     if not number.is_finite() or number != number.to_integral_value():
         raise ValueError(f"{column} must be a whole number")
     # Bounded before int(): 1e1000000 is integral and would materialise a
-    # million-digit integer. No day count in these formulas comes near this.
+    # 1,000,001-digit integer. No day count in these formulas comes near this.
     if number.copy_abs() > MAX_DAY_COUNT:
         raise ValueError(f"{column} must be at most {MAX_DAY_COUNT}")
     return int(number)

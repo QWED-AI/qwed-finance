@@ -20,8 +20,8 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   skipped for a missing required column, or one that cannot be parsed or
   verified, is a failed row; a file with no rows fails; and the summary
   states how many rows were verified, mismatched, skipped and errored.
-  `errors_count` counts every failed row (and is 1 for a file with no
-  rows or one that cannot be read), a new `verified_count` output counts
+  `errors_count` counts every failed row (and is 1 for a file with no rows
+  or one that cannot be read), a new `verified_count` output counts
   verified ones, and SARIF reports skipped and errored rows under a new
   rule, `QWED-FIN-002`. A file that cannot be read — zero-byte, malformed
   CSV or JSON, JSON that is not an array of objects or an object of
@@ -36,12 +36,13 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
   finite (`Infinity` as an NPV rate verified only the first cash flow),
   and a day count must be a whole number no larger than 1,000,000 in
   magnitude (`1.9` holding days was truncated to 1, and `1e1000000`
-  materialised a million-digit integer). Files are read as exact text (CSV) or Decimal (JSON numbers),
-  so `0.99999999999999999` days is not rounded to 1 first. A row the guard
-  refuses as `UNVERIFIABLE` is an error under `QWED-FIN-002`, not a
-  mismatch. SARIF points at the line each CSV record starts on (blank
-  lines and multi-line values no longer shift it) and at line 1 for JSON
-  records. Errors are printed as one escaped line.
+  materialised a 1,000,001-digit integer). Files are read as exact text
+  (CSV) or Decimal (JSON numbers), so `0.99999999999999999` days is not
+  rounded to 1 first. A row the guard refuses as `UNVERIFIABLE` is an
+  error under `QWED-FIN-002`, not a mismatch. SARIF points at the line
+  each CSV record starts on (blank lines and multi-line values no longer
+  shift it) and at line 1 for JSON records. Errors are printed as one
+  escaped line.
 - **A computed value of zero no longer verifies any claim (#98).**
   `RiskGuard.verify_var`, `RiskGuard.verify_expected_shortfall`,
   `BondGuard.verify_convexity` and `BondGuard.verify_ytm` compared a claim
