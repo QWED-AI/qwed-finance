@@ -1,2 +1,10 @@
 treat_unknown_as_block: true
 ignore_patterns_in_tests: true
+suppressions:
+  # action_entrypoint.py opens data_file (a workflow input) and GITHUB_OUTPUT
+  # (set by the Actions runner). data_file is confined to GITHUB_WORKSPACE by
+  # _safe_resolve: resolve() follows .. and symlinks, then is_relative_to()
+  # refuses anything outside the workspace. The taint engine trusts
+  # sanitizers by name only, by design, so this is a reviewed false positive:
+  # QWED-AI/qwed-security#158. Scoped to this rule in this file.
+  - pattern=taint-os-getenv-to-open reason=false-positive path=action_entrypoint.py
