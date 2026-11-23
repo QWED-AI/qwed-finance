@@ -414,7 +414,7 @@ def action_scan_file(scan_type: str):
     # never through float, so a check such as "whole number of days" sees
     # what the file says. An empty or unreadable file is a scan with no rows,
     # which fails with its outputs set, rather than an exception.
-    from decimal import Decimal
+    from decimal import Decimal, DecimalException
 
     read_error = None
     try:
@@ -426,7 +426,9 @@ def action_scan_file(scan_type: str):
             df = pd.read_csv(data_file, dtype=str)
     except pd.errors.EmptyDataError:
         df = pd.DataFrame()
-    except (OSError, ValueError, TypeError, pd.errors.ParserError) as e:
+    # DecimalException: a JSON number whose exponent is past Decimal's limit
+    # (1e9999999999999999999) raises InvalidOperation, an ArithmeticError.
+    except (OSError, ValueError, TypeError, DecimalException, pd.errors.ParserError) as e:
         df = pd.DataFrame()
         read_error = f"{type(e).__name__}: {_shown(str(e))}"
         print(f"❌ Could not read {data_file}: {read_error}")

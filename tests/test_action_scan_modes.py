@@ -583,3 +583,58 @@ def test_json_that_is_not_records_is_a_failed_scan(
     assert code == 0
     assert out["errors_count"] == "1"
     assert out["verified_count"] == "0"
+
+
+# -- review round 4 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fail_on_error, exit_code", [("true", 1), ("false", 0)])
+def test_a_json_number_past_decimal_limits_is_a_failed_scan(
+    fail_on_error, exit_code, monkeypatch, tmp_path, capsys
+):
+    """json.loads with parse_float=Decimal raises InvalidOperation for an
+    exponent past Decimal's limit; it was not caught, so no output was set."""
+    row = dict(GOOD["scan-risk"], holding_days="__DAYS__")
+    data = tmp_path / "rows.json"
+    data.write_text(json.dumps([row]).replace('"__DAYS__"', "1e9999999999999999999"))
+    code, out, _ = run_scan(
+        "scan-risk",
+        data,
+        monkeypatch,
+        tmp_path,
+        capsys,
+        fail_on_error=fail_on_error,
+        sarif=True,
+    )
+    assert code == exit_code
+    assert out["errors_count"] == "1"
+    assert out["verified_count"] == "0"
+    assert "sarif_file" in out
+
+
+@pytest.mark.parametrize("days", ["1e999999999999999999", "1e400"])
+def test_a_json_exponent_within_decimal_limits_fails_the_row(
+    days, monkeypatch, tmp_path, capsys
+):
+    """Inside Decimal's limits the file reads, and the bound refuses the row."""
+    row = dict(GOOD["scan-risk"], holding_days="__DAYS__")
+    data = tmp_path / "rows.json"
+    data.write_text(json.dumps([row]).replace('"__DAYS__"', days))
+    code, out, stdout = run_scan("scan-risk", data, monkeypatch, tmp_path, capsys)
+    assert code == 1
+    assert "0/1 rows verified (0 mismatch, 0 skipped, 1 error)" in stdout
+
+
+def test_ordinary_json_numbers_still_parse_exactly(monkeypatch, tmp_path, capsys):
+    row = {
+        "portfolio_value": 1000000,
+        "volatility": 0.02,
+        "confidence": 0.95,
+        "holding_days": 1,
+        "llm_var": "$32,900",
+    }
+    data = tmp_path / "rows.json"
+    data.write_text(json.dumps([row]))
+    code, out, _ = run_scan("scan-risk", data, monkeypatch, tmp_path, capsys)
+    assert code == 0
+    assert out["verified_count"] == "1"
