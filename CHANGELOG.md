@@ -10,6 +10,39 @@ v2.1.0 are documented as [GitHub Releases](https://github.com/QWED-AI/qwed-finan
 
 ### Security
 
+- **The GitHub Action's scan modes no longer pass rows they did not verify
+  (#101).** `scan-npv`, `scan-bonds`, `scan-fx` and `scan-risk` counted
+  every row that was not a confirmed mismatch as passed: a missing or
+  misnamed column (`LLM_NPV` for `llm_npv`) skipped every row, a value that
+  failed to parse (`$999 thousand`, `NaN`) printed a warning, and a file
+  with no rows had nothing to fail. Each reported "All calculations
+  verified!", `errors_count=0`, a passing badge and exit 0. Now a row
+  skipped for a missing required column, or one that cannot be parsed or
+  verified, is a failed row; a file with no rows fails; and the summary
+  states how many rows were verified, mismatched, skipped and errored.
+  `errors_count` counts every failed row (and is 1 for a file with no rows
+  or one that cannot be read), a new `verified_count` output counts
+  verified ones, and SARIF reports skipped and errored rows under a new
+  rule, `QWED-FIN-002`. A file that cannot be read — zero-byte, malformed
+  CSV or JSON, JSON that is not an array of objects or an object of
+  columns, a JSON number past Decimal's limits, a directory or an
+  unreadable path — is a failed scan with its outputs set, not an
+  exception, so `fail_on_error: false` still reports it. A required column
+  is matched by its exact name, so case, separator, whitespace and
+  look-alike variants are missing, not guessed. An optional column present
+  in the file but blank in a row is an error for that row instead of
+  silently taking its default; one absent from the whole file still takes
+  its documented default, and the log says so. A numeric cell must be
+  finite (`Infinity` as an NPV rate verified only the first cash flow),
+  and a day count must be a whole number no larger than 1,000,000 in
+  magnitude (`1.9` holding days was truncated to 1, and `1e1000000`
+  materialised a 1,000,001-digit integer). Files are read as exact text
+  (CSV) or Decimal (JSON numbers), so `0.99999999999999999` days is not
+  rounded to 1 first. A row the guard refuses as `UNVERIFIABLE` is an
+  error under `QWED-FIN-002`, not a mismatch. SARIF points at the line
+  each CSV record starts on (blank lines and multi-line values no longer
+  shift it) and at line 1 for JSON records. Errors are printed as one
+  escaped line.
 - **A computed value of zero no longer verifies any claim (#98).**
   `RiskGuard.verify_var`, `RiskGuard.verify_expected_shortfall`,
   `BondGuard.verify_convexity` and `BondGuard.verify_ytm` compared a claim
